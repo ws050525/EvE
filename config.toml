@@ -35,7 +35,7 @@ temperature = 0.7
 [modes.desktop]
 provider = "local"
 system_prompt = "prompts/desktop.md"
-tools = ["app_launch", "screen_capture"]
+tools = ["app_launch", "window_list", "window_focus", "key_type", "key_hotkey", "mouse_click", "screen_capture"]
 require_confirm = true
 max_tokens = 512
 temperature = 0.2

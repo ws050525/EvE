@@ -110,6 +110,7 @@ class Agent:
                     confirm=confirm,
                     require_confirm=self.mode.require_confirm,
                 )
+                self._log_action(call.name, call.arguments, output)
                 self.messages.append(
                     {
                         "role": "tool",
@@ -122,6 +123,23 @@ class Agent:
         return f"（已达 {MAX_STEPS} 步上限，停止。可以 /reset 后给更具体的指令）"
 
     # ---------- 日志 ----------
+
+    def _log_action(self, name: str, args: dict[str, Any], output: str) -> None:
+        """动手的事单独记一份，便于回放追责。"""
+        try:
+            self.cfg.log_dir.mkdir(parents=True, exist_ok=True)
+            path = self.cfg.log_dir / f"actions-{datetime.now():%Y-%m-%d}.jsonl"
+            record = {
+                "ts": datetime.now().isoformat(timespec="seconds"),
+                "mode": self.mode_name,
+                "tool": name,
+                "args": args,
+                "result": output[:300],
+            }
+            with path.open("a", encoding="utf-8") as fh:
+                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+        except OSError:
+            pass
 
     def _log(self, result: ChatResult, step: int, user_text: str) -> None:
         try:
