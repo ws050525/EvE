@@ -1,5 +1,5 @@
 models/
-tools/
+/tools/
 .ssh/
 .tmp/
 .venv/
