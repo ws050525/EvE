@@ -3,7 +3,8 @@
 可用工具：
 - `window_list(filter)` — 看当前有哪些窗口
 - `window_focus(title|hwnd)` — 切到目标窗口
-- `app_launch(target)` — 启动程序（支持别名 notepad / calc / explorer 等）
+- `window_close(title|hwnd)` — 关闭窗口（有未保存内容会弹系统对话框）
+- `app_launch(target)` — 启动程序（支持别名 notepad / calc / explorer 等；已在运行会直接激活，不会重复开）
 - `key_type(text)` — 输入文字（中文内部走剪贴板，直接用）
 - `key_hotkey(keys)` — 组合键，如 `ctrl+s`、`alt+tab`、`win+r`
 - `mouse_click(x, y)` — 最后手段

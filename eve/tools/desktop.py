@@ -18,6 +18,25 @@ from typing import Any
 from .registry import ToolRegistry, ToolSpec
 
 user32 = ctypes.WinDLL("user32", use_last_error=True)
+kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+WM_CLOSE = 0x0010
+
+
+def _pid_exe(pid: int) -> str:
+    """取进程可执行文件全路径，失败返回空串。"""
+    handle = kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, int(pid))
+    if not handle:
+        return ""
+    try:
+        size = wt.DWORD(1024)
+        buf = ctypes.create_unicode_buffer(1024)
+        if kernel32.QueryFullProcessImageNameW(handle, 0, buf, ctypes.byref(size)):
+            return buf.value
+        return ""
+    finally:
+        kernel32.CloseHandle(handle)
 
 
 # ---------- 窗口（纯 ctypes，不引三方库）----------
@@ -101,6 +120,30 @@ def window_focus(args: dict[str, Any]) -> str:
         )
     time.sleep(0.2)
     return f"[ok] 已激活 hwnd={target}"
+
+
+def window_close(args: dict[str, Any]) -> str:
+    hwnd = args.get("hwnd")
+    title = str(args.get("title", "")).strip()
+    if hwnd:
+        target = int(hwnd)
+    elif title:
+        matches = _match_windows(title)
+        if not matches:
+            return f"[error] 没有标题包含 '{title}' 的窗口"
+        target = matches[0]["hwnd"]
+    else:
+        return "[error] 需要 hwnd 或 title 之一"
+
+    if not user32.PostMessageW(target, WM_CLOSE, 0, 0):
+        return f"[error] 无法向 hwnd={target} 发送关闭消息"
+    time.sleep(0.35)
+    if user32.IsWindow(target):
+        return (
+            f"[ok] 已向 hwnd={target} 发送关闭请求，但窗口仍在。"
+            "多半弹出了「是否保存」对话框，需要用户处理"
+        )
+    return f"[ok] 窗口 hwnd={target} 已关闭"
 
 
 # ---------- 键鼠注入 ----------
@@ -196,6 +239,21 @@ def register_desktop(registry: ToolRegistry) -> None:
                 },
             },
             handler=window_focus,
+            risk="medium",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="window_close",
+            description="关闭指定窗口（发送 WM_CLOSE）。窗口有未保存内容时会弹出系统对话框。",
+            parameters={
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string", "description": "窗口标题关键词"},
+                    "hwnd": {"type": "integer", "description": "窗口句柄"},
+                },
+            },
+            handler=window_close,
             risk="medium",
         )
     )

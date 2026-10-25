@@ -49,7 +49,19 @@ def app_launch(args: dict) -> str:
         return f"[error] 找不到可执行文件：{target}"
 
     # 先记下现有窗口，启动后靠"新增窗口"确认它真的起来了
-    from .desktop import _enum_windows
+    from .desktop import _enum_windows, _force_foreground, _pid_exe
+
+    # 已经在跑就别再开一个实例，直接激活已有窗口
+    exe_name = os.path.basename(cmd).lower()
+    for win in _enum_windows():
+        running = os.path.basename(_pid_exe(win["pid"])).lower()
+        if running and running == exe_name:
+            if _force_foreground(win["hwnd"]):
+                return (
+                    f"[ok] {cmd} 已在运行，已激活现有窗口：{_clean(win['title'])!r}，"
+                    f"hwnd={win['hwnd']}（没有重复启动）"
+                )
+            break
 
     before = {w["hwnd"] for w in _enum_windows()}
 
