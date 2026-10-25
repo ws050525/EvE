@@ -1,5 +1,6 @@
 models/
 tools/
+.ssh/
 .tmp/
 .venv/
 __pycache__/
