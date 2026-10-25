@@ -1,0 +1,9 @@
+models/
+tools/
+.tmp/
+.venv/
+__pycache__/
+*.pyc
+logs/
+.env
+config.local.toml

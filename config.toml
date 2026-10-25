@@ -1,0 +1,61 @@
+# EVE 配置
+# 所有路径支持相对项目根目录。密钥只从环境变量读，不要写在这里。
+
+[app]
+default_mode = "chat"
+log_dir = "logs"
+
+# ---------- provider：唯一抽象边界 ----------
+# type = "openai_compatible" 覆盖 llama.cpp / vLLM / Ollama / DeepSeek / OpenAI / OpenRouter
+
+[providers.local]
+type = "openai_compatible"
+base_url = "http://127.0.0.1:18080/v1"
+api_key = "local-no-auth"
+model = "qwen3vl-4b"
+enabled = true
+
+[providers.cloud]
+type = "openai_compatible"
+base_url = "https://api.deepseek.com/v1"
+api_key_env = "EVE_CLOUD_API_KEY"
+model = "deepseek-chat"
+enabled = false          # 填好 key 后改 true 即可，无需改代码
+
+# ---------- 档位：一张表，不是一套算法 ----------
+
+[modes.chat]
+provider = "local"
+system_prompt = "prompts/chat.md"
+tools = []
+require_confirm = false
+max_tokens = 512
+temperature = 0.7
+
+[modes.desktop]
+provider = "local"
+system_prompt = "prompts/desktop.md"
+tools = ["app_launch", "screen_capture"]
+require_confirm = true
+max_tokens = 512
+temperature = 0.2
+
+[modes.work]
+provider = "cloud"
+system_prompt = "prompts/work.md"
+tools = ["fs_read", "fs_write", "shell_exec"]
+require_confirm = true
+max_tokens = 2048
+temperature = 0.3
+
+# ---------- 本地推理引擎（由 `python -m eve.serve` 启动）----------
+
+[engine]
+bin = "D:/1/Aico AI - 1.1/llama.cpp/llama-server.exe"
+model = "D:/1/EVE/models/Qwen3-VL-4B-Instruct-GGUF/Qwen/Qwen3-VL-4B-Instruct-GGUF/Qwen3VL-4B-Instruct-Q4_K_M.gguf"
+mmproj = "D:/1/EVE/models/Qwen3-VL-4B-Instruct-GGUF/Qwen/Qwen3-VL-4B-Instruct-GGUF/mmproj-Qwen3VL-4B-Instruct-F16.gguf"
+port = 18080
+ctx = 8192
+ngl = 99
+threads = 8
+extra_args = []
