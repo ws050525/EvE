@@ -37,8 +37,16 @@ mmproj = "models/Qwen3-VL-4B-Instruct-GGUF/Qwen/Qwen3-VL-4B-Instruct-GGUF/mmproj
 ctx = 4096
 ngl = 99
 
-# ---------- 云端模型（填 key 即可用，先留空）----------
+# 热切换测试用：另一个模型文件，纯文本（无 mmproj，正好验证无视觉的代码路径）
+[models.qwen3-4b-2507]
+label = "Qwen3-4B-Instruct-2507 Q4_K_M"
+kind = "local_gguf"
+engine = "llamacpp"
+path = "models/Qwen3-4B-Instruct-2507-Q4_K_M-GGUF/voconly/Qwen3-4B-Instruct-2507-Q4_K_M-GGUF/Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
+ctx = 8192
+ngl = 99
 
+# ---------- 云端模型（填 key 即可用，先留空）----------
 [models.deepseek]
 label = "DeepSeek Chat"
 kind = "cloud_api"

@@ -84,9 +84,14 @@ def app_launch(args: dict) -> str:
         if fresh:
             same_pid = [w for w in fresh if w["pid"] == proc.pid]
             win = (same_pid or fresh)[0]
+            # 窗口标题在创建后还会变（记事本：'记事本' -> '无标题 - Notepad'）。
+            # 稍等再读一次，否则交给模型的是过期标题，它按标题找窗口就会失败。
+            time.sleep(0.6)
+            refreshed = {w["hwnd"]: w for w in _enum_windows()}
+            win = refreshed.get(win["hwnd"], win)
             return (
-                f"[ok] 已启动 {cmd}，窗口标题：{_clean(win['title'])!r}，"
-                f"hwnd={win['hwnd']}。下一步可以 window_focus(title=...) 激活它。"
+                f"[ok] 已启动 {cmd}，窗口标题：{_clean(win['title'])!r}，hwnd={win['hwnd']}。"
+                f"下一步用 window_focus(hwnd={win['hwnd']}) 激活它——hwnd 比标题稳，标题可能会变。"
             )
 
     return f"[ok] 已启动 {cmd}，但 6 秒内没检测到新窗口（可能还在加载或已最小化）"
