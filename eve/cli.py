@@ -1,32 +1,41 @@
 """REPL 入口。
 
-刻意做得很薄：参数解析 + 打印 + 斜杠命令，逻辑都在 Agent 里。
+刻意做得很薄：参数解析 + 打印 + 斜杠命令，逻辑都在 Agent / RuntimeManager 里。
 """
 
 from __future__ import annotations
 
 import argparse
+import getpass
 import sys
-from pathlib import Path
 
 from .agent import Agent
+from .catalog import scan
 from .config import ConfigError, load_config
 from .provider import ProviderError
+from .runtime import RuntimeManager
 
 BANNER = """EVE v{version} — 本地优先 agent
 档位：{modes}
-/provider：{provider} → {model} ({base_url})
+当前：{mode} 档 / 模型 {model}（{kind}，{state}）
 输入 /help 看命令，/exit 退出。
 """
 
+HELP = """  /models              列出已配置的模型
+  /use <id>            给当前档位换模型（保留对话上下文）
+  /scan                扫描磁盘上可用的 GGUF
+  /mode <name>         切换档位（会重置上下文）
+  /status              运行时状态（引擎、端口、加载耗时）
+  /stop                停止本地引擎，释放显存
+  /key <id>            为云端模型保存 API Key（DPAPI 加密）
+  /reset               清空上下文
+  /tools               当前档位可用工具
+  /where               当前 provider / 模型 / 端点
+  /exit                退出"""
 
-def _print_meta(result_latency: int | None, usage: dict | None) -> None:
-    if result_latency is None:
-        return
-    bits = [f"{result_latency / 1000:.1f}s"]
-    if usage:
-        bits.append(f"tok {usage.get('prompt_tokens', '?')}→{usage.get('completion_tokens', '?')}")
-    print(f"  \033[90m[{', '.join(bits)}]\033[0m", flush=True)
+
+def _kind_label(kind: str) -> str:
+    return {"local_gguf": "本地", "cloud_api": "云端"}.get(kind, kind)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -38,6 +47,7 @@ def main(argv: list[str] | None = None) -> int:
 
     parser = argparse.ArgumentParser(prog="eve", description="本地优先的个人 agent")
     parser.add_argument("--mode", help="启动档位（默认读 config.toml 的 default_mode）")
+    parser.add_argument("--model", help="临时覆盖档位使用的模型 id")
     parser.add_argument("--config", help="配置文件路径")
     parser.add_argument("--once", metavar="TEXT", help="非交互执行一句话后退出")
     parser.add_argument("--yes", action="store_true", help="非交互模式下自动批准工具调用")
@@ -49,10 +59,19 @@ def main(argv: list[str] | None = None) -> int:
         print(f"配置错误：{exc}", file=sys.stderr)
         return 2
 
+    runtime = RuntimeManager(cfg)
     mode_name = args.mode or cfg.default_mode
+
     try:
-        agent = Agent(cfg, mode_name)
-    except (ConfigError, ProviderError) as exc:
+        mode = cfg.mode(mode_name)
+        model_id = args.model or mode.model
+        model = cfg.model(model_id)
+        kind = model.detect_kind()
+        # 模型按需加载：这里只建对象，不发请求，所以 /models /scan 都是秒回
+        agent = Agent(cfg, mode_name, runtime)
+        if args.model:
+            agent.switch_model(args.model)
+    except (ConfigError, ProviderError, OSError) as exc:
         print(f"启动失败：{exc}", file=sys.stderr)
         return 2
 
@@ -63,26 +82,28 @@ def main(argv: list[str] | None = None) -> int:
         answer = input(f"  工具 {spec.name}({preview}) 需要确认，执行吗？[y/N] ").strip().lower()
         return answer in {"y", "yes"}
 
-    def run_once(text: str) -> int:
+    if args.once:
+        if kind == "local_gguf":
+            print("（首次使用会拉起本地引擎，约 3–6 秒）", file=sys.stderr, flush=True)
         try:
-            reply = agent.send(text, confirm=confirm)
+            print(agent.send(args.once, confirm=confirm).strip())
         except (ProviderError, ConfigError) as exc:
             print(f"调用失败：{exc}", file=sys.stderr)
             return 1
-        print(reply.strip())
+        finally:
+            runtime.shutdown()
         return 0
 
-    if args.once:
-        return run_once(args.once)
-
-    p = agent.provider_cfg
+    status = runtime.status()
+    model = cfg.model(agent.model_id)
     print(
         BANNER.format(
             version=__import__("eve").__version__,
             modes=" / ".join(sorted(cfg.modes)),
-            provider=p.name,
-            model=agent.provider.model,
-            base_url=p.base_url,
+            mode=agent.mode_name,
+            model=f"{agent.model_id} · {model.label}",
+            kind=_kind_label(model.detect_kind()),
+            state=status.state,
         )
     )
     if agent.warning:
@@ -90,28 +111,56 @@ def main(argv: list[str] | None = None) -> int:
 
     while True:
         try:
-            line = input(f"\033[1mEVE[{agent.mode_name}]>\033[0m ").strip()
+            line = input(f"\033[1mEVE[{agent.mode_name}/{agent.model_id}]>\033[0m ").strip()
         except (EOFError, KeyboardInterrupt):
             print()
+            runtime.shutdown()
             return 0
 
         if not line:
             continue
         if line in {"/exit", "/quit"}:
+            runtime.shutdown()
             return 0
         if line == "/help":
-            print(
-                "  /mode <chat|desktop|work>  切换档位（会重置上下文）\n"
-                "  /reset                     清空上下文\n"
-                "  /tools                     当前档位可用工具\n"
-                "  /where                     当前 provider / 模型\n"
-                "  /exit                      退出"
-            )
+            print(HELP)
+            continue
+        if line == "/models":
+            active = agent.model_id
+            for mid, m in sorted(cfg.models.items()):
+                mark = "*" if mid == active else " "
+                print(f"  {mark} {mid:<20} {_kind_label(m.detect_kind()):<4} {m.label}")
+            print("  （* 为当前使用；用 /use <id> 切换）")
+            continue
+        if line == "/scan":
+            found = scan(cfg.model_dirs)
+            if not found:
+                print("  没扫描到 GGUF。检查 config.toml 的 [app].model_dirs")
+                continue
+            for item in found:
+                mm = f"，mmproj: {item.mmproj.name}" if item.mmproj else ""
+                print(f"  {item.name}\n      {item.size_gb} GB  {item.quant}{mm}\n      {item.path}")
+            print(f"  共 {len(found)} 个。要使用请在 config.toml 里加一个 [models.*] 段。")
+            continue
+        if line == "/status":
+            st = runtime.status()
+            print(f"  model={st.model_id or '（未加载）'} kind={_kind_label(st.kind)} state={st.state}")
+            if st.base_url:
+                print(f"  base_url={st.base_url}")
+            if st.pid:
+                print(f"  pid={st.pid} 加载耗时={st.load_seconds}s")
+            if st.log_path:
+                print(f"  引擎日志={st.log_path}")
+            if st.error:
+                print(f"  错误={st.error}")
+            continue
+        if line == "/stop":
+            runtime.shutdown()
+            print("  本地引擎已停止")
             continue
         if line == "/where":
-            p = agent.provider_cfg
-            print(f"  provider={p.name} model={agent.provider.model} url={p.base_url}")
-            print(f"  mode={agent.mode_name} provider_enabled={p.enabled}")
+            p = agent.provider
+            print(f"  model={agent.model_id} base_url={getattr(p.cfg, 'base_url', '?')}")
             continue
         if line == "/tools":
             print(f"  可用：{', '.join(agent.active_tools) or '（无）'}")
@@ -119,6 +168,36 @@ def main(argv: list[str] | None = None) -> int:
         if line == "/reset":
             agent.reset()
             print("  上下文已清空")
+            continue
+        if line.startswith("/key"):
+            parts = line.split()
+            if len(parts) != 2:
+                print("  用法：/key <model_id>")
+                continue
+            mid = parts[1]
+            if mid not in cfg.models:
+                print(f"  没有模型 {mid}")
+                continue
+            try:
+                secret = getpass.getpass("  粘贴 API Key（不回显）：").strip()
+            except (EOFError, KeyboardInterrupt):
+                print("\n  已取消")
+                continue
+            if not secret:
+                print("  空值，未保存")
+                continue
+            runtime.keys.set(mid, secret)
+            print(f"  已加密保存到 {runtime.keys.path}")
+            continue
+        if line.startswith("/use"):
+            parts = line.split()
+            if len(parts) != 2:
+                print(f"  用法：/use <{'|'.join(sorted(cfg.models))}>")
+                continue
+            try:
+                print("  " + agent.switch_model(parts[1]))
+            except (ConfigError, ProviderError) as exc:
+                print(f"  切换失败：{exc}")
             continue
         if line.startswith("/mode"):
             parts = line.split()
@@ -137,14 +216,11 @@ def main(argv: list[str] | None = None) -> int:
             continue
 
         try:
-            reply = agent.send(line, confirm=confirm)
+            print(agent.send(line, confirm=confirm).strip())
         except (ProviderError, ConfigError) as exc:
             print(f"  调用失败：{exc}")
-            continue
         except KeyboardInterrupt:
             print("\n  已中断")
-            continue
-        print(reply.strip())
 
 
 if __name__ == "__main__":

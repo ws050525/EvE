@@ -1,14 +1,18 @@
-"""Agent 主循环：会话、工具调用、步数上限、结构化日志。"""
+"""Agent 主循环：会话、工具调用、步数上限、结构化日志。
+
+v0.4 起不再自己造 Provider，而是向 RuntimeManager 要：
+档位决定 system prompt 和工具集，模型决定用哪份算力，两者解耦。
+"""
 
 from __future__ import annotations
 
 import json
 from datetime import datetime
-from pathlib import Path
 from typing import Any, Callable
 
-from .config import AppConfig, ModeConfig, ProviderConfig
-from .provider import ChatResult, Provider, build_provider
+from .config import AppConfig, ModeConfig
+from .provider import ChatResult, Provider
+from .runtime import RuntimeManager
 from .tools.registry import ToolRegistry, build_default_registry
 
 MAX_STEPS = 6
@@ -17,29 +21,49 @@ ConfirmFn = Callable[[Any, dict[str, Any]], bool]
 
 
 class Agent:
-    def __init__(self, cfg: AppConfig, mode_name: str | None = None):
+    def __init__(
+        self,
+        cfg: AppConfig,
+        mode_name: str | None = None,
+        runtime: RuntimeManager | None = None,
+    ):
         self.cfg = cfg
-        self.registry = build_default_registry()
-        self.registry_snapshot = self.registry.names()
+        self.runtime = runtime or RuntimeManager(cfg)
+        self.registry: ToolRegistry = build_default_registry()
         self.mode_name = mode_name or cfg.default_mode
         self.mode: ModeConfig
-        self.provider: Provider
-        self.provider_cfg: ProviderConfig
         self.messages: list[dict[str, Any]] = []
+        self._model_override: str | None = None
+        self._provider: Provider | None = None
+        self._provider_model_id: str = ""
         self._activate(self.mode_name, reset=True)
 
-    # ---------- 档位 ----------
+    # ---------- 档位与模型 ----------
+
+    @property
+    def model_id(self) -> str:
+        return self._model_override or self.mode.model
+
+    @property
+    def provider(self) -> Provider:
+        """懒加载：只有真的要发请求时才拉起引擎。
+
+        这样 /models、/scan、/key 这些命令不需要等模型加载。
+        """
+        model_id = self.model_id
+        if self._provider is None or self._provider_model_id != model_id:
+            self._provider = self.runtime.provider_for(model_id)
+            self._provider_model_id = model_id
+        return self._provider
 
     def _activate(self, name: str, reset: bool) -> None:
         mode = self.cfg.mode(name)
-        provider_cfg = self.cfg.provider_for(name)
-        provider = build_provider(provider_cfg)
         system = mode.system_prompt.read_text(encoding="utf-8").strip()
 
         self.mode_name = name
         self.mode = mode
-        self.provider_cfg = provider_cfg
-        self.provider = provider
+        self._provider = None  # 档位变了，下次用到再解析
+        self._provider_model_id = ""
         self.active_tools = [t for t in mode.tools if self.registry.has(t)]
         missing = [t for t in mode.tools if not self.registry.has(t)]
 
@@ -48,19 +72,35 @@ class Agent:
         else:
             self.messages[0] = {"role": "system", "content": system}
 
-        if missing:
-            self._warn = f"档位 '{name}' 配置了尚未实现的工具：{', '.join(missing)}"
-        else:
-            self._warn = ""
+        self._warn = (
+            f"档位 '{name}' 配置了尚未实现的工具：{', '.join(missing)}" if missing else ""
+        )
 
     @property
     def warning(self) -> str:
         return getattr(self, "_warn", "")
 
     def switch_mode(self, name: str) -> str:
-        """切档会重置上下文——不同档位的 system prompt 和工具集不同，混着聊没有意义。"""
+        """切档会重置上下文——不同档位的 system prompt 与工具集不同，混着聊没有意义。"""
+        self._model_override = None
         self._activate(name, reset=True)
-        return f"已切换到 {name} 档（provider={self.provider_cfg.name}, model={self.provider.model}）"
+        return f"已切换到 {name} 档，模型 {self.model_id}"
+
+    def switch_model(self, model_id: str) -> str:
+        """只为当前档位换模型，保留对话上下文。"""
+        model = self.cfg.model(model_id)
+        previous = self._model_override
+        self._model_override = model_id
+        self._provider = None
+        self._provider_model_id = ""
+        try:
+            self.provider  # 立即加载，好把失败尽早暴露给用户
+        except Exception:
+            self._model_override = previous  # 切失败就退回原模型
+            raise
+        status = self.runtime.status()
+        detail = f"，加载 {status.load_seconds}s" if status.load_seconds else ""
+        return f"当前档位已切到模型 {model_id}（{model.label}{detail}）"
 
     def reset(self) -> None:
         self._activate(self.mode_name, reset=True)
@@ -132,6 +172,7 @@ class Agent:
             record = {
                 "ts": datetime.now().isoformat(timespec="seconds"),
                 "mode": self.mode_name,
+                "model": self.model_id,
                 "tool": name,
                 "args": args,
                 "result": output[:300],
@@ -148,8 +189,7 @@ class Agent:
             record = {
                 "ts": datetime.now().isoformat(timespec="seconds"),
                 "mode": self.mode_name,
-                "provider": self.provider_cfg.name,
-                "model": result.model or self.provider.model,
+                "model": result.model or self.model_id,
                 "step": step,
                 "latency_ms": result.latency_ms,
                 "usage": result.usage,

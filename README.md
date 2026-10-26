@@ -4,11 +4,12 @@
 
 ## 设计
 
-- **手动切档，不做自动路由**。每个档位 = 一个 provider + 一段 system prompt + 一组工具，就是一张表。
-- **模型接口不写死**。所有远程模型走 OpenAI 兼容协议（`base_url` + `model` + key），换厂商改配置即可。
-- 详细设计见 [docs/design-mvp.md](docs/design-mvp.md)。
+- **手动切档，不做自动路由**。每个档位 = 一段 system prompt + 一组工具 + 一个默认模型。
+- **模型是一等公民**。`[models.*]` 声明有什么，`[modes.*]` 只声明用哪个；换本地模型、换云端厂商都只是改配置。
+- **本地模型的引擎在执行时按需拉起**，动态端口，退出即释放。
+- 详细设计见 [docs/design-mvp.md](docs/design-mvp.md) 与 [docs/design-v2-ui-voice.md](docs/design-v2-ui-voice.md)。
 
-| 档位 | 模型 | 定位 |
+| 档位 | 默认模型 | 定位 |
 | --- | --- | --- |
 | `chat` | 本地 GGUF | 闲聊、陪伴 |
 | `desktop` | 本地 GGUF + 视觉 | 开软件、搜索、点击 |
@@ -17,16 +18,17 @@
 ## 环境
 
 - Python 3.11：`D:\python\python.exe`（不在 PATH 里，需显式调用）
-- 无第三方依赖，只用标准库（`tomllib`、`urllib`）
+- 无第三方依赖，只用标准库（`tomllib`、`urllib`、`ctypes`）
 
 ## 快速开始
 
 ```powershell
-# 1. 起本地推理服务（读 config.toml 的 [engine] 段）
-& 'D:\python\python.exe' -m eve.serve
-
-# 2. 另开一个终端，开始对话
+# 直接对话（本地引擎会自动拉起，约 3–6 秒）
 & 'D:\python\python.exe' -m eve
+
+# 指定档位 / 临时指定模型
+& 'D:\python\python.exe' -m eve --mode desktop
+& 'D:\python\python.exe' -m eve --model qwen3vl-4b-small
 
 # 非交互跑一句
 & 'D:\python\python.exe' -m eve --once "你好，介绍一下你自己"
@@ -36,20 +38,47 @@
 
 | 命令 | 说明 |
 | --- | --- |
-| `/mode <name>` | 切换档位（chat / desktop / work） |
-| `/reset` | 清空当前会话上下文 |
-| `/tools` | 列出当前档位可用的工具 |
-| `/where` | 显示当前 provider / 模型 / 端点 |
-| `/help` | 帮助 |
-| `/exit` | 退出 |
+| `/models` | 列出已配置的模型，`*` 标出当前使用 |
+| `/use <id>` | 给当前档位换模型（保留上下文，会重启本地引擎） |
+| `/scan` | 扫描 `model_dirs` 下可用的 GGUF，含量化等级与 mmproj 配对 |
+| `/mode <name>` | 切换档位（会重置上下文） |
+| `/status` | 运行时状态：引擎、端口、pid、加载耗时、日志路径 |
+| `/stop` | 停止本地引擎，释放显存 |
+| `/key <id>` | 为云端模型保存 API Key（DPAPI 加密，不落明文） |
+| `/reset` `/tools` `/where` `/help` `/exit` | 常规 |
+
+## 配置要点
+
+```toml
+[engines.llamacpp]
+bin = "tools/llama.cpp/llama-server.exe"
+
+[models.qwen3vl-4b]
+kind = "local_gguf"          # 本地 GGUF
+path = "models/....gguf"
+mmproj = "models/....gguf"   # 视觉投影，可省
+ctx = 8192
+ngl = 99
+
+[models.deepseek]
+kind = "cloud_api"           # 云端 API
+base_url = "https://api.deepseek.com/v1"
+model = "deepseek-chat"
+api_key_env = "EVE_CLOUD_API_KEY"
+
+[modes.chat]
+model = "qwen3vl-4b"         # 档位只绑模型 id，不绑类型
+```
 
 ## 状态
 
 - [x] v0.1 骨架：配置、provider 抽象、多轮对话、切档、日志
 - [x] v0.2 desktop 档：窗口枚举/激活、键鼠注入、中文输入、动作日志
 - [x] v0.3 本地档打磨：重复启动复用窗口、窗口关闭、工具级自测
-- [ ] v0.4 work 档：云端接入（配置已留位，`enabled = false`）+ 文件/命令工具
-- [ ] v0.5 体验：流式输出、会话持久化、截图定位优化
+- [x] v0.4 模型抽象：ModelCatalog + RuntimeManager，本地/云端统一切换，引擎懒启动
+- [ ] v0.5 UI（PySide6）：模型面板 + 聊天 + 托盘
+- [ ] v0.6 语音：两段式唤醒 + ASR + piper TTS
+- [ ] v0.7 打包：PyInstaller spec + 首次运行向导
 
 ## desktop 档实测
 
@@ -60,3 +89,12 @@
 | 「输入：你好，我是 EVE」 | 中文走剪贴板 + Ctrl+V，正常 |
 | 重复「打开记事本」 | 检测到进程已在运行，直接激活原窗口，不再开新实例 |
 | 「关闭记事本」 | `window_close` 发送 WM_CLOSE，窗口消失；有未保存内容会提示 |
+
+## v0.4 实测（模型切换）
+
+| 场景 | 结果 |
+| --- | --- |
+| 直接对话 | 自动拉起引擎，加载约 6 秒，44 tok/s |
+| `/use qwen3vl-4b-small` | 停旧引擎、起新引擎，新端口 53734，加载 3.4 秒 |
+| `/status` | 显示 pid、端口、加载耗时、引擎日志路径 |
+| `/use deepseek` | 未配 key 时明确报错，指出用 `/key` 或设环境变量 |

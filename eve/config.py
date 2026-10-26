@@ -1,9 +1,11 @@
-"""配置加载：一张 TOML 表就是整个模型层的接线板。
+"""配置加载。
 
-设计要点：
-- 业务代码只认 `ProviderConfig` / `ModeConfig`，不认任何厂商。
-- 密钥永远走环境变量（`api_key_env`），配置文件里不出现明文。
-- 相对路径一律相对项目根目录解析，便于在不同机器上迁移。
+v0.4 起，"模型"是一等公民：
+- `[models.*]` 声明有哪些模型（本地 GGUF 或云端 API）
+- `[modes.*]` 只声明"用哪个 model_id"，不再区分 local / cloud
+- `[engines.*]` 声明推理引擎本体（可执行文件、线程数、额外参数）
+
+这样换本地模型、换云端厂商、甚至给同一个档位换成本地模型，都只是改数据。
 """
 
 from __future__ import annotations
@@ -18,6 +20,9 @@ class ConfigError(RuntimeError):
     """配置有问题时抛出，消息面向用户。"""
 
 
+# ---------- 内部：给 Provider 用的连接参数 ----------
+
+
 @dataclass
 class ProviderConfig:
     name: str
@@ -26,7 +31,7 @@ class ProviderConfig:
     model: str = ""
     api_key: str = ""
     api_key_env: str = ""
-    timeout: float = 180.0
+    timeout: float = 300.0
     enabled: bool = True
 
     def resolved_key(self) -> str:
@@ -34,16 +39,47 @@ class ProviderConfig:
             value = os.environ.get(self.api_key_env, "").strip()
             if not value:
                 raise ConfigError(
-                    f"provider '{self.name}' 需要环境变量 {self.api_key_env}，当前为空"
+                    f"模型 '{self.name}' 需要环境变量 {self.api_key_env}，当前为空"
                 )
             return value
         return self.api_key or "not-needed"
 
 
+# ---------- 模型 ----------
+
+
+@dataclass
+class ModelConfig:
+    id: str
+    label: str
+    kind: str = ""  # local_gguf | cloud_api（留空则按 base_url 推断）
+    engine: str = "llamacpp"
+    path: str = ""
+    mmproj: str = ""
+    ctx: int = 8192
+    ngl: int = 99
+    base_url: str = ""
+    model: str = ""
+    api_key_env: str = ""
+
+    def detect_kind(self) -> str:
+        if self.kind:
+            return self.kind
+        return "cloud_api" if self.base_url else "local_gguf"
+
+
+@dataclass
+class EngineConfig:
+    name: str
+    bin: str
+    threads: int = 8
+    extra_args: list[str] = field(default_factory=list)
+
+
 @dataclass
 class ModeConfig:
     name: str
-    provider: str
+    model: str
     system_prompt: Path
     tools: list[str] = field(default_factory=list)
     require_confirm: bool = False
@@ -52,25 +88,21 @@ class ModeConfig:
 
 
 @dataclass
-class EngineConfig:
-    bin: str
-    model: str
-    mmproj: str = ""
-    port: int = 18080
-    ctx: int = 8192
-    ngl: int = 99
-    threads: int = 8
-    extra_args: list[str] = field(default_factory=list)
-
-
-@dataclass
 class AppConfig:
     root: Path
     default_mode: str
     log_dir: Path
-    providers: dict[str, ProviderConfig]
+    data_dir: Path
+    model_dirs: list[Path]
+    models: dict[str, ModelConfig]
     modes: dict[str, ModeConfig]
-    engine: EngineConfig | None = None
+    engines: dict[str, EngineConfig]
+
+    def model(self, model_id: str) -> ModelConfig:
+        if model_id not in self.models:
+            known = ", ".join(sorted(self.models)) or "（无）"
+            raise ConfigError(f"未知模型 '{model_id}'，可选：{known}")
+        return self.models[model_id]
 
     def mode(self, name: str) -> ModeConfig:
         if name not in self.modes:
@@ -78,19 +110,18 @@ class AppConfig:
             raise ConfigError(f"未知档位 '{name}'，可选：{known}")
         return self.modes[name]
 
-    def provider_for(self, mode_name: str) -> ProviderConfig:
-        mode = self.mode(mode_name)
-        if mode.provider not in self.providers:
-            raise ConfigError(
-                f"档位 '{mode_name}' 指向不存在的 provider '{mode.provider}'"
-            )
-        provider = self.providers[mode.provider]
-        if not provider.enabled:
-            raise ConfigError(
-                f"provider '{provider.name}' 未启用（enabled = false）。"
-                f"填好密钥后把 enabled 改成 true 即可。"
-            )
-        return provider
+    def engine(self, name: str) -> EngineConfig:
+        if name not in self.engines:
+            known = ", ".join(sorted(self.engines)) or "（无）"
+            raise ConfigError(f"未知引擎 '{name}'，已配置：{known}")
+        return self.engines[name]
+
+    def abs(self, value: str | Path) -> Path:
+        p = Path(value)
+        return p if p.is_absolute() else (self.root / p)
+
+
+# ---------- 解析 ----------
 
 
 def _pick(dc_type, raw: dict, *, drop: tuple[str, ...] = ()) -> dict:
@@ -115,41 +146,52 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
     if not path.exists():
         raise ConfigError(f"找不到配置文件：{path}")
 
-    with path.open("rb") as fh:
-        data = tomllib.load(fh)
+    # 用 utf-8-sig：记事本等编辑器可能写入 BOM，tomllib 会因此报 "Invalid statement"
+    text = path.read_text(encoding="utf-8-sig")
+    data = tomllib.loads(text)
 
     app = data.get("app", {})
-    log_dir = Path(app.get("log_dir", "logs"))
-    if not log_dir.is_absolute():
-        log_dir = root / log_dir
 
-    providers: dict[str, ProviderConfig] = {}
-    for name, raw in data.get("providers", {}).items():
-        providers[name] = ProviderConfig(name=name, **_pick(ProviderConfig, raw, drop=("name",)))
+    def resolve(value: str) -> Path:
+        p = Path(value)
+        return p if p.is_absolute() else (root / p)
+
+    log_dir = resolve(app.get("log_dir", "logs"))
+    data_dir = resolve(app.get("data_dir", ".data"))
+    model_dirs = [resolve(d) for d in _as_list(app.get("model_dirs", ["models"]))]
+
+    engines: dict[str, EngineConfig] = {}
+    for name, raw in data.get("engines", {}).items():
+        engines[name] = EngineConfig(name=name, **_pick(EngineConfig, raw, drop=("name",)))
+
+    models: dict[str, ModelConfig] = {}
+    for mid, raw in data.get("models", {}).items():
+        models[mid] = ModelConfig(id=mid, **_pick(ModelConfig, raw, drop=("id",)))
+
+    if not models:
+        raise ConfigError("配置里没有任何 [models.*]")
 
     modes: dict[str, ModeConfig] = {}
     for name, raw in data.get("modes", {}).items():
         raw = dict(raw)
         if "tools" in raw:
             raw["tools"] = _as_list(raw["tools"])
-        prompt = raw.get("system_prompt", f"prompts/{name}.md")
-        prompt_path = Path(prompt)
-        if not prompt_path.is_absolute():
-            prompt_path = root / prompt_path
+        prompt = Path(raw.get("system_prompt", f"prompts/{name}.md"))
+        prompt_path = prompt if prompt.is_absolute() else (root / prompt)
         if not prompt_path.exists():
             raise ConfigError(f"档位 '{name}' 的 system_prompt 不存在：{prompt_path}")
         modes[name] = ModeConfig(
             name=name,
-            provider=raw.get("provider", "local"),
             system_prompt=prompt_path,
-            **_pick(ModeConfig, raw, drop=("name", "provider", "system_prompt")),
+            **_pick(ModeConfig, raw, drop=("name", "system_prompt")),
         )
 
     if not modes:
-        raise ConfigError("配置里没有任何 [modes.*] 档位")
+        raise ConfigError("配置里没有任何 [modes.*]")
 
-    engine_raw = data.get("engine")
-    engine = EngineConfig(**_pick(EngineConfig, engine_raw)) if engine_raw else None
+    for mode in modes.values():
+        if mode.model not in models:
+            raise ConfigError(f"档位 '{mode.name}' 指向不存在的模型 '{mode.model}'")
 
     default_mode = app.get("default_mode", next(iter(modes)))
     if default_mode not in modes:
@@ -159,7 +201,9 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
         root=root,
         default_mode=default_mode,
         log_dir=log_dir,
-        providers=providers,
+        data_dir=data_dir,
+        model_dirs=model_dirs,
+        models=models,
         modes=modes,
-        engine=engine,
+        engines=engines,
     )
