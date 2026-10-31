@@ -8,10 +8,18 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import (
+    QEasingCurve,
+    QPoint,
+    QPropertyAnimation,
+    QRect,
+    QTimer,
+    Qt,
+)
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QFrame,
+    QGraphicsOpacityEffect,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -236,15 +244,75 @@ class ChatWindow(QWidget):
         self._send()
 
     def _enter_chat(self) -> None:
+        """空态 → 对话态：莫比乌斯从中间飞到顶栏，其余内容交叉淡入淡出。"""
         if self._started_chat:
             return
         self._started_chat = True
-        self.hero.hide()
+
+        # 1. 把大环从 hero 布局里摘出来，变成窗口上的浮层，才能自由飞
+        start_rect = QRect(self.mobius.mapTo(self, QPoint(0, 0)), self.mobius.size())
+        self.hero.layout().removeWidget(self.mobius)
+        self.mobius.setParent(self)
+        self.mobius.setMinimumSize(1, 1)
+        self.mobius.setMaximumSize(2000, 2000)
+        self.mobius.setGeometry(start_rect)
+        self.mobius.show()
+        self.mobius.raise_()
+
+        # 2. 目标位置：顶栏里那个小环
         self.mobius_small.show()
+        small_effect = QGraphicsOpacityEffect(self.mobius_small)
+        small_effect.setOpacity(0.0)
+        self.mobius_small.setGraphicsEffect(small_effect)
+        target_rect = QRect(
+            self.mobius_small.mapTo(self, QPoint(0, 0)), self.mobius_small.size()
+        )
+
+        # 3. hero 淡出
+        hero_effect = QGraphicsOpacityEffect(self.hero)
+        self.hero.setGraphicsEffect(hero_effect)
+        hero_fade = QPropertyAnimation(hero_effect, b"opacity", self)
+        hero_fade.setDuration(170)
+        hero_fade.setStartValue(1.0)
+        hero_fade.setEndValue(0.0)
+        hero_fade.setEasingCurve(QEasingCurve.OutCubic)
+        hero_fade.finished.connect(self._finish_hero_fade)
+        hero_fade.start(QPropertyAnimation.DeleteWhenStopped)
+
+        # 4. 对话区淡入（稍微延后，避免两件事同时抢注意力）
         self.chat.show()
+        chat_effect = QGraphicsOpacityEffect(self.chat)
+        self.chat.setGraphicsEffect(chat_effect)
+        chat_fade = QPropertyAnimation(chat_effect, b"opacity", self)
+        chat_fade.setDuration(280)
+        chat_fade.setStartValue(0.0)
+        chat_fade.setEndValue(1.0)
+        chat_fade.setEasingCurve(QEasingCurve.OutCubic)
+        chat_fade.finished.connect(lambda: self.chat.setGraphicsEffect(None))
+        QTimer.singleShot(110, lambda: chat_fade.start(QPropertyAnimation.DeleteWhenStopped))
+
+        # 5. 主动画：大环飞到顶栏并缩到 26px
+        self._fly = QPropertyAnimation(self.mobius, b"geometry", self)
+        self._fly.setDuration(420)
+        self._fly.setStartValue(start_rect)
+        self._fly.setEndValue(target_rect)
+        self._fly.setEasingCurve(QEasingCurve.OutCubic)
+        self._fly.finished.connect(lambda: self._finish_fly(small_effect))
+        self._fly.start(QPropertyAnimation.DeleteWhenStopped)
+
         self._body.setStretchFactor(self.hero, 0)
         self._body.setStretchFactor(self.chat, 1)
-        # 半透明窗口不会自动清除被隐藏控件的区域，必须手动重绘
+        self.update()
+
+    def _finish_hero_fade(self) -> None:
+        self.hero.hide()
+        self.hero.setGraphicsEffect(None)
+        self.update()
+
+    def _finish_fly(self, small_effect: QGraphicsOpacityEffect) -> None:
+        self.mobius.hide()
+        small_effect.setOpacity(1.0)
+        self.mobius_small.setGraphicsEffect(None)
         self.update()
 
     def _set_busy(self, busy: bool) -> None:

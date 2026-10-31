@@ -84,7 +84,8 @@ class MobiusWidget(QWidget):
     # ---------- 绘制 ----------
 
     def paintEvent(self, event) -> None:  # noqa: N802 (Qt 命名)
-        size = self._size
+        # 用实际尺寸而不是 _size：过渡动画期间控件会被拉成不同大小
+        size = max(12, min(self.width(), self.height()))
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
         painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
