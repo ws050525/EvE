@@ -1,35 +1,36 @@
-"""主窗口：空态莫比乌斯 / 对话 / 输入。"""
+"""主窗口：空态莫比乌斯 / 聊天气泡 / 输入。
+
+结构上分三块：
+- 顶栏：状态点、档位、模型、窗口按钮
+- 主体：空态（hero）或消息列表（ChatView），二选一
+- 底部：状态行、分隔线、输入区
+"""
 
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
-from PySide6.QtGui import (
-    QColor,
-    QFont,
-    QPainter,
-    QPen,
-    QTextBlockFormat,
-    QTextCharFormat,
-    QTextCursor,
-)
+from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
+    QFrame,
     QHBoxLayout,
     QLabel,
     QLineEdit,
     QPushButton,
-    QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
 
 from . import theme
 from .bridge import AgentBridge
+from .chat_view import ChatView
 from .mobius import MobiusWidget
 
 GREETING = "今天想做点什么？"
 SUBTITLE = "说句话，或者让我帮你干点活"
+SUGGESTIONS = ("打开记事本", "解释一下什么是 Agent", "帮我理一下今天的待办")
 
 TOP_BAR = 44
+SIDE = 96
 
 
 class ChatWindow(QWidget):
@@ -43,78 +44,31 @@ class ChatWindow(QWidget):
         self._dragging: object | None = None
         self._busy = False
         self._started_chat = False
-        self._status_timer = None
         self._streaming = False
-        self._stream_anchor = 0
 
         self._build()
         self._bridge = AgentBridge(config_path, self)
         self._wire()
         self._bridge.ready.connect(lambda *_: self._bridge.preload())
 
-    # ---------- 构建界面 ----------
+    # ---------- 构建 ----------
 
     def _build(self) -> None:
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
-
         root.addWidget(self._build_top_bar())
 
         body = QVBoxLayout()
-        body.setContentsMargins(96, 4, 96, 0)
+        body.setContentsMargins(SIDE, 4, SIDE, 0)
         body.setSpacing(0)
 
-        self.mobius = MobiusWidget(self, 220)
-        body.addWidget(self.mobius, 0, Qt.AlignHCenter)
-
-        # 空态整块：莫比乌斯 + 问候。对话开始后整块让位给消息区
-        self.hero = QWidget(self)
-        hero = QVBoxLayout(self.hero)
-        hero.setContentsMargins(0, 0, 0, 0)
-        hero.setSpacing(0)
-        hero.addStretch(1)
-        hero.addWidget(self.mobius, 0, Qt.AlignHCenter)
-        hero.addSpacing(24)
-
-        self.greeting = QLabel(GREETING, self.hero)
-        self.greeting.setAlignment(Qt.AlignCenter)
-        self.greeting.setStyleSheet(
-            f"color: {theme.TEXT0}; font-family: {theme.FONT_STACK}; font-size: 20px;"
-        )
-        hero.addWidget(self.greeting)
-
-        self.subtitle = QLabel(SUBTITLE, self.hero)
-        self.subtitle.setAlignment(Qt.AlignCenter)
-        self.subtitle.setStyleSheet(
-            f"color: {theme.TEXT2}; font-family: {theme.FONT_STACK}; font-size: 13px;"
-        )
-        hero.addWidget(self.subtitle)
-
-        # 空态给三个入口，比一片空白有用，也顺便教了用户能干什么
-        self.chips = QWidget(self.hero)
-        chip_row = QHBoxLayout(self.chips)
-        chip_row.setContentsMargins(0, 20, 0, 0)
-        chip_row.setSpacing(10)
-        chip_row.addStretch(1)
-        for label in ("打开记事本", "解释一下什么是 Agent", "帮我理一下今天的待办"):
-            chip = QPushButton(label, self.chips)
-            chip.setCursor(Qt.PointingHandCursor)
-            chip.setStyleSheet(theme.CHIP_QSS)
-            chip.clicked.connect(lambda _=False, text=label: self._use_chip(text))
-            chip_row.addWidget(chip)
-        chip_row.addStretch(1)
-        hero.addWidget(self.chips)
-
-        hero.addStretch(1)
-
+        self.hero = self._build_hero()
         body.addWidget(self.hero, 1)
 
-        self.browser = QTextBrowser(self)
-        self.browser.setStyleSheet(theme.BROWSER_QSS)
-        self.browser.setOpenExternalLinks(True)
-        self.browser.hide()
-        body.addWidget(self.browser, 0)
+        self.chat = ChatView(self)
+        self.chat.hide()
+        body.addWidget(self.chat, 0)
 
         self.status = QLabel("", self)
         self.status.setAlignment(Qt.AlignCenter)
@@ -127,9 +81,114 @@ class ChatWindow(QWidget):
         self._body = body
         root.addLayout(body, 1)
 
-        input_row = QHBoxLayout()
-        input_row.setContentsMargins(96, 10, 96, 28)
-        input_row.setSpacing(10)
+        divider = QFrame(self)
+        divider.setFixedHeight(1)
+        divider.setStyleSheet(
+            "background: qlineargradient(x1:0, y1:0, x2:1, y2:0,"
+            " stop:0 rgba(37,42,51,0), stop:0.5 #252A33, stop:1 rgba(37,42,51,0));"
+        )
+        root.addWidget(divider)
+        root.addSpacing(10)
+
+        root.addLayout(self._build_input_row())
+
+    def _build_top_bar(self) -> QWidget:
+        bar = QWidget(self)
+        bar.setFixedHeight(TOP_BAR)
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(20, 0, 12, 0)
+        layout.setSpacing(8)
+
+        self.mobius_small = MobiusWidget(bar, 26)
+        self.mobius_small.hide()
+        layout.addWidget(self.mobius_small)
+
+        title = QLabel("EVE", bar)
+        title.setStyleSheet(
+            f"color: {theme.TEXT0}; font-family: {theme.FONT_STACK};"
+            " font-size: 14px; font-weight: 600;"
+        )
+        layout.addWidget(title)
+        layout.addStretch(1)
+
+        self.dot = QLabel(bar)
+        self.dot.setFixedSize(7, 7)
+        self._set_dot(theme.TEXT2)
+        layout.addWidget(self.dot)
+        layout.addSpacing(4)
+
+        self.mode_chip = QLabel("chat", bar)
+        self.mode_chip.setFixedHeight(20)
+        self.mode_chip.setStyleSheet(
+            f"color: {theme.TEXT1}; background: {theme.PANEL};"
+            f" border: 1px solid {theme.LINE}; border-radius: 10px;"
+            f" padding: 0 9px; font-family: {theme.FONT_STACK}; font-size: 11px;"
+        )
+        layout.addWidget(self.mode_chip, 0, Qt.AlignVCenter)
+        layout.addSpacing(4)
+
+        self.model_label = QLabel("", bar)
+        self.model_label.setStyleSheet(
+            f"color: {theme.TEXT2}; font-family: {theme.FONT_STACK}; font-size: 11px;"
+            " padding-right: 4px;"
+        )
+        layout.addWidget(self.model_label)
+
+        for text, slot in (("—", self.showMinimized), ("×", self.close)):
+            btn = QPushButton(text, bar)
+            btn.setFixedSize(30, 26)
+            btn.setStyleSheet(theme.FLAT_BUTTON_QSS)
+            btn.clicked.connect(slot)
+            layout.addWidget(btn)
+
+        return bar
+
+    def _build_hero(self) -> QWidget:
+        hero = QWidget(self)
+        layout = QVBoxLayout(hero)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+        layout.addStretch(1)
+
+        self.mobius = MobiusWidget(hero, 220)
+        layout.addWidget(self.mobius, 0, Qt.AlignHCenter)
+        layout.addSpacing(26)
+
+        greeting = QLabel(GREETING, hero)
+        greeting.setAlignment(Qt.AlignCenter)
+        greeting.setStyleSheet(
+            f"color: {theme.TEXT0}; font-family: {theme.FONT_STACK}; font-size: 20px;"
+        )
+        layout.addWidget(greeting)
+
+        subtitle = QLabel(SUBTITLE, hero)
+        subtitle.setAlignment(Qt.AlignCenter)
+        subtitle.setStyleSheet(
+            f"color: {theme.TEXT2}; font-family: {theme.FONT_STACK}; font-size: 13px;"
+        )
+        layout.addWidget(subtitle)
+
+        chips = QWidget(hero)
+        row = QHBoxLayout(chips)
+        row.setContentsMargins(0, 22, 0, 0)
+        row.setSpacing(10)
+        row.addStretch(1)
+        for label in SUGGESTIONS:
+            chip = QPushButton(label, chips)
+            chip.setCursor(Qt.PointingHandCursor)
+            chip.setStyleSheet(theme.CHIP_QSS)
+            chip.clicked.connect(lambda _=False, text=label: self._use_chip(text))
+            row.addWidget(chip)
+        row.addStretch(1)
+        layout.addWidget(chips)
+
+        layout.addStretch(1)
+        return hero
+
+    def _build_input_row(self) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setContentsMargins(SIDE, 12, SIDE, 26)
+        row.setSpacing(10)
 
         self.input = QLineEdit(self)
         self.input.setPlaceholderText("输入…")
@@ -142,47 +201,9 @@ class ChatWindow(QWidget):
         self.send_btn.setMinimumHeight(44)
         self.send_btn.clicked.connect(self._send)
 
-        input_row.addWidget(self.input, 1)
-        input_row.addWidget(self.send_btn)
-        root.addLayout(input_row)
-
-        self._mobii = [self.mobius, self.mobius_small]
-
-    def _build_top_bar(self) -> QWidget:
-        bar = QWidget(self)
-        bar.setFixedHeight(TOP_BAR)
-        layout = QHBoxLayout(bar)
-        layout.setContentsMargins(20, 0, 12, 0)
-        layout.setSpacing(8)
-
-        # 对话进行中，莫比乌斯缩到这儿
-        self.mobius_small = MobiusWidget(bar, 28)
-        self.mobius_small.hide()
-        layout.addWidget(self.mobius_small)
-
-        title = QLabel("EVE", bar)
-        title.setStyleSheet(
-            f"color: {theme.TEXT0}; font-family: {theme.FONT_STACK};"
-            " font-size: 14px; font-weight: 600;"
-        )
-        layout.addWidget(title)
-        layout.addStretch(1)
-
-        self.mode_label = QLabel("chat", bar)
-        self.mode_label.setStyleSheet(
-            f"color: {theme.TEXT2}; font-family: {theme.FONT_STACK}; font-size: 12px;"
-        )
-        layout.addWidget(self.mode_label)
-        layout.addSpacing(6)
-
-        for text, slot in (("—", self.showMinimized), ("×", self.close)):
-            btn = QPushButton(text, bar)
-            btn.setFixedSize(32, 28)
-            btn.setStyleSheet(theme.FLAT_BUTTON_QSS)
-            btn.clicked.connect(slot)
-            layout.addWidget(btn)
-
-        return bar
+        row.addWidget(self.input, 1)
+        row.addWidget(self.send_btn)
+        return row
 
     # ---------- 接线 ----------
 
@@ -202,7 +223,7 @@ class ChatWindow(QWidget):
             return
         self.input.clear()
         self._enter_chat()
-        self._append("你", text, theme.TEXT1)
+        self.chat.add_message("user", text)
         self._set_busy(True)
         self._set_status("思考中…")
         self._set_state("thinking")
@@ -214,20 +235,15 @@ class ChatWindow(QWidget):
         self.input.setText(text)
         self._send()
 
-    def _set_state(self, state: str) -> None:
-        for widget in self._mobii:
-            widget.set_state(state)
-
     def _enter_chat(self) -> None:
         if self._started_chat:
             return
         self._started_chat = True
         self.hero.hide()
-        self.mobius.hide()
         self.mobius_small.show()
-        self.browser.show()
+        self.chat.show()
         self._body.setStretchFactor(self.hero, 0)
-        self._body.setStretchFactor(self.browser, 1)
+        self._body.setStretchFactor(self.chat, 1)
         # 半透明窗口不会自动清除被隐藏控件的区域，必须手动重绘
         self.update()
 
@@ -241,81 +257,30 @@ class ChatWindow(QWidget):
     def _set_status(self, text: str) -> None:
         self.status.setText(text)
 
-    # ---------- 消息渲染（用 QTextCursor，便于流式追加）----------
+    def _set_dot(self, color: str) -> None:
+        self.dot.setStyleSheet(f"background: {color}; border-radius: 3px;")
 
-    def _body_format(self, color: str) -> QTextCharFormat:
-        fmt = QTextCharFormat()
-        fmt.setForeground(QColor(color))
-        font = QFont("Microsoft YaHei UI")
-        font.setPointSizeF(10.5)
-        fmt.setFont(font)
-        return fmt
+    def _set_state(self, state: str) -> None:
+        for widget in (self.mobius, self.mobius_small):
+            widget.set_state(state)
+        if state in ("thinking", "streaming", "acting", "listening"):
+            self._set_dot(theme.ACCENT)
+        elif state == "error":
+            self._set_dot(theme.DANGER)
+        elif state == "boot":
+            self._set_dot(theme.WARN)
+        else:
+            self._set_dot("#3A4350")
 
-    def _who_format(self) -> QTextCharFormat:
-        fmt = QTextCharFormat()
-        fmt.setForeground(QColor(theme.TEXT2))
-        font = QFont("Microsoft YaHei UI")
-        font.setPointSizeF(8.5)
-        fmt.setFont(font)
-        return fmt
-
-    def _end_cursor(self) -> QTextCursor:
-        cursor = self.browser.textCursor()
-        cursor.movePosition(QTextCursor.End)
-        return cursor
-
-    def _scroll_to_bottom(self) -> None:
-        bar = self.browser.verticalScrollBar()
-        bar.setValue(bar.maximum())
-
-    def _append(self, who: str, text: str, color: str) -> None:
-        cursor = self._end_cursor()
-        if not self.browser.document().isEmpty():
-            block = QTextBlockFormat()
-            block.setTopMargin(18)
-            cursor.insertBlock(block)
-        cursor.insertText(who, self._who_format())
-        cursor.insertBlock()
-        cursor.insertText(text, self._body_format(color))
-        self.browser.setTextCursor(cursor)
-        self._scroll_to_bottom()
-
-    def _stream_begin(self) -> None:
-        cursor = self._end_cursor()
-        if not self.browser.document().isEmpty():
-            block = QTextBlockFormat()
-            block.setTopMargin(18)
-            cursor.insertBlock(block)
-        cursor.insertText("伊芙", self._who_format())
-        cursor.insertBlock()
-        self._stream_anchor = cursor.position()
-        self._streaming = True
-        self.browser.setTextCursor(cursor)
-
-    def _stream_chunk(self, delta: str) -> None:
-        if not self._streaming:
-            self._stream_begin()
-        cursor = self._end_cursor()
-        cursor.insertText(delta, self._body_format(theme.TEXT0))
-        self.browser.setTextCursor(cursor)
-        self._scroll_to_bottom()
-
-    def _stream_end(self, final: str) -> None:
-        """用最终文本覆盖流式内容——人格层可能剥掉了颜文字，两者会不一致。"""
-        if not self._streaming:
-            return
-        cursor = self.browser.textCursor()
-        cursor.setPosition(self._stream_anchor)
-        cursor.movePosition(QTextCursor.End, QTextCursor.KeepAnchor)
-        cursor.insertText(final, self._body_format(theme.TEXT0))
-        self.browser.setTextCursor(cursor)
-        self._streaming = False
-        self._scroll_to_bottom()
+    def demo_send(self, text: str) -> None:
+        """开发期用：自动发一条消息，方便截图和冒烟测试。"""
+        self.input.setText(text)
+        self._send()
 
     # ---------- 事件 ----------
 
     def _on_ready(self, model_id: str, label: str) -> None:
-        self.mode_label.setText(label or model_id)
+        self.model_label.setText(label or model_id)
 
     def _on_event(self, kind: str, data: dict) -> None:
         if kind == "engine_starting":
@@ -333,9 +298,10 @@ class ChatWindow(QWidget):
             self._set_status("思考中…")
         elif kind == "reply_chunk":
             if not self._streaming:
+                self._streaming = True
                 self._set_state("streaming")
                 self._set_status("")
-            self._stream_chunk(data.get("text", ""))
+            self.chat.push_chunk(data.get("text", ""))
         elif kind == "tool_start":
             self._set_state("acting")
             self._set_status(f"执行 {data.get('name')}…")
@@ -348,25 +314,20 @@ class ChatWindow(QWidget):
 
     def _on_replied(self, text: str) -> None:
         if self._streaming:
-            self._stream_end(text)
-            self._set_state("idle")
+            self.chat.end_stream(text)
+            self._streaming = False
         else:
-            self._set_state("idle")
-            self._append("伊芙", text, theme.TEXT0)
+            self.chat.add_message("assistant", text)
+        self._set_state("idle")
         self._set_status("")
         self._set_busy(False)
 
     def _on_failed(self, message: str) -> None:
         self._streaming = False
         self._set_state("error")
-        self._append("系统", message, theme.DANGER)
+        self.chat.add_message("system", message)
         self._set_status("")
         self._set_busy(False)
-
-    def demo_send(self, text: str) -> None:
-        """开发期用：自动发一条消息，方便截图和冒烟测试。"""
-        self.input.setText(text)
-        self._send()
 
     # ---------- 窗口 ----------
 
