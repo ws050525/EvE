@@ -9,11 +9,12 @@ import argparse
 import getpass
 import sys
 
-from .agent import Agent
-from .catalog import scan
-from .config import ConfigError, load_config
-from .provider import ProviderError
-from .runtime import RuntimeManager
+from eve_agent import Agent
+from eve_core.catalog import scan
+from eve_core.config import ConfigError, load_config
+from eve_core.provider import ProviderError
+from eve_core.runtime import RuntimeManager
+from eve_core.version import __version__
 
 BANNER = """EVE v{version} — 本地优先 agent
 档位：{modes}
@@ -98,7 +99,7 @@ def main(argv: list[str] | None = None) -> int:
     model = cfg.model(agent.model_id)
     print(
         BANNER.format(
-            version=__import__("eve").__version__,
+            version=__version__,
             modes=" / ".join(sorted(cfg.modes)),
             mode=agent.mode_name,
             model=f"{agent.model_id} · {model.label}",

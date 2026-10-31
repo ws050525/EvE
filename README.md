@@ -7,13 +7,27 @@
 - **手动切档，不做自动路由**。每个档位 = 一段 system prompt + 一组工具 + 一个默认模型。
 - **模型是一等公民**。`[models.*]` 声明有什么，`[modes.*]` 只声明用哪个；换本地模型、换云端厂商都只是改配置。
 - **本地模型的引擎在执行时按需拉起**，动态端口，退出即释放。
-- 详细设计见 [docs/design-mvp.md](docs/design-mvp.md) 与 [docs/design-v2-ui-voice.md](docs/design-v2-ui-voice.md)。
+- 详细设计见 [docs/](docs/)：`design-mvp.md`（整体）、`design-ui.md`（界面）、`design-mascot.md`（形象）、`design-persona.md`（人格）。
 
 | 档位 | 默认模型 | 定位 |
 | --- | --- | --- |
 | `chat` | 本地 GGUF | 闲聊、陪伴 |
 | `desktop` | 本地 GGUF + 视觉 | 开软件、搜索、点击 |
 | `work` | 云端 API | 整理文档、写代码、爬数据 |
+
+## 目录结构
+
+```
+eve_core/     核心：配置、provider、运行时、模型扫描、DPAPI 密钥
+eve_agent/    agent 层：主循环、工具注册表、内置工具（桌面/基础）
+eve_ui/       界面层（v0.5 开始填充，目前只有说明）
+eve_cli.py    命令行入口
+config.toml   模型与档位配置
+prompts/      各档位的 system prompt
+docs/         设计文档与视觉稿
+models/       本地模型文件（不入版本库）
+logs/         会话日志与引擎日志（不入版本库）
+```
 
 ## 环境
 
@@ -24,15 +38,17 @@
 
 ```powershell
 # 直接对话（本地引擎会自动拉起，约 3–6 秒）
-& 'D:\python\python.exe' -m eve
+& 'D:\python\python.exe' eve_cli.py
 
 # 指定档位 / 临时指定模型
-& 'D:\python\python.exe' -m eve --mode desktop
-& 'D:\python\python.exe' -m eve --model qwen3vl-4b-small
+& 'D:\python\python.exe' eve_cli.py --mode desktop
+& 'D:\python\python.exe' eve_cli.py --model qwen3vl-4b-small
 
 # 非交互跑一句
-& 'D:\python\python.exe' -m eve --once "你好，介绍一下你自己"
+& 'D:\python\python.exe' eve_cli.py --once "你好，介绍一下你自己"
 ```
+
+> v0.4.2 起入口是 `eve_cli.py`，原来的 `python -m eve` 已不再可用。
 
 ## REPL 命令
 
@@ -76,11 +92,15 @@ model = "qwen3vl-4b"         # 档位只绑模型 id，不绑类型
 - [x] v0.2 desktop 档：窗口枚举/激活、键鼠注入、中文输入、动作日志
 - [x] v0.3 本地档打磨：重复启动复用窗口、窗口关闭、工具级自测
 - [x] v0.4 模型抽象：ModelCatalog + RuntimeManager，本地/云端统一切换，引擎懒启动
-- [ ] v0.5 UI（PySide6）：模型面板 + 聊天 + 托盘
+- [x] v0.4.1 修复：窗口标题异步变化导致的定位失败
+- [x] v0.4.2 结构重构：按功能拆成 `eve_core` / `eve_agent` / `eve_ui`
+- [ ] v0.5 界面：事件通道 + 主窗口 + 莫比乌斯 + 悬浮球 + 人格状态机
 - [ ] v0.6 语音：两段式唤醒 + ASR + piper TTS
 - [ ] v0.7 打包：PyInstaller spec + 首次运行向导
 
-## desktop 档实测
+## 实测数据
+
+### desktop 档
 
 | 场景 | 结果 |
 | --- | --- |
@@ -90,11 +110,11 @@ model = "qwen3vl-4b"         # 档位只绑模型 id，不绑类型
 | 重复「打开记事本」 | 检测到进程已在运行，直接激活原窗口，不再开新实例 |
 | 「关闭记事本」 | `window_close` 发送 WM_CLOSE，窗口消失；有未保存内容会提示 |
 
-## v0.4 实测（模型切换）
+### 模型与运行时
 
 | 场景 | 结果 |
 | --- | --- |
-| 直接对话 | 自动拉起引擎，加载约 6 秒，44 tok/s |
-| `/use qwen3vl-4b-small` | 停旧引擎、起新引擎，新端口 53734，加载 3.4 秒 |
-| `/status` | 显示 pid、端口、加载耗时、引擎日志路径 |
-| `/use deepseek` | 未配 key 时明确报错，指出用 `/key` 或设环境变量 |
+| 本地模型生成 | 约 66 tok/s（Qwen3-VL-4B Q4_K_M，RTX 4060 Laptop 8G） |
+| 引擎加载 | 3.4–3.8 秒 |
+| `/use` 热切换 | 换端口、换 pid、各 3.4 秒，退出无残留 |
+| `/scan` | 0.2 秒（不加载模型） |

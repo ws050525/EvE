@@ -14,10 +14,10 @@
 
 | 层 | 文件 | 现状 | 判定 |
 | --- | --- | --- | --- |
-| 对话协议 | `eve/provider.py` | OpenAI 兼容，统一 `chat()` | ✅ 可换 |
+| 对话协议 | `eve_core/provider.py` | OpenAI 兼容，统一 `chat()` | ✅ 可换 |
 | 档位 → provider | `config.toml [modes.*]` | 配置映射 | ✅ 可换 |
 | 端点地址 | `config.toml:13` | `http://127.0.0.1:18080/v1` 固定端口 | ⚠️ 半写死 |
-| **引擎启动** | `eve/serve.py:27 build_command()` | 硬编码 llama.cpp 的参数：`-ngl` / `-c` / `--mmproj` | ❌ **写死** |
+| **引擎启动** | `eve/serve.py:27 build_command()`（v0.4 已删除，逻辑并入 `eve_core/runtime.py`） | 硬编码 llama.cpp 的参数：`-ngl` / `-c` / `--mmproj` | ❌ **写死** |
 | **引擎路径** | `config.toml:54 [engine].bin` | 指向 `D:/1/Aico AI - 1.1/...` 另一个项目 | ❌ **写死且跨项目** |
 | **模型文件** | `config.toml:55 [engine].model` | 单一路径，换模型要改文件 | ❌ **单选** |
 

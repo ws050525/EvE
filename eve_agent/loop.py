@@ -10,9 +10,10 @@ import json
 from datetime import datetime
 from typing import Any, Callable
 
-from .config import AppConfig, ModeConfig
-from .provider import ChatResult, Provider
-from .runtime import RuntimeManager
+from eve_core.config import AppConfig, ModeConfig
+from eve_core.provider import ChatResult, Provider
+from eve_core.runtime import RuntimeManager
+
 from .tools.registry import ToolRegistry, build_default_registry
 
 MAX_STEPS = 6
