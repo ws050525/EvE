@@ -20,8 +20,9 @@
 ```
 eve_core/     核心：配置、provider、运行时、模型扫描、DPAPI 密钥、事件总线
 eve_agent/    agent 层：主循环、人格状态机、工具注册表与内置工具
-eve_ui/       界面层（v0.5 开始填充，目前只有说明）
+eve_ui/       界面层：theme / mobius（莫比乌斯）/ bridge（Qt 桥）/ main_window / app
 eve_cli.py    命令行入口
+eve_gui.py    图形界面入口
 config.toml   模型与档位配置
 prompts/      各档位的 system prompt
 tests/        纯逻辑单元测试（不需要模型）
@@ -38,7 +39,10 @@ logs/         会话日志与引擎日志（不入版本库）
 ## 快速开始
 
 ```powershell
-# 直接对话（本地引擎会自动拉起，约 3–6 秒）
+# 图形界面（推荐）
+& 'D:\python\python.exe' eve_gui.py
+
+# 命令行
 & 'D:\python\python.exe' eve_cli.py
 
 # 指定档位 / 临时指定模型
@@ -49,7 +53,12 @@ logs/         会话日志与引擎日志（不入版本库）
 & 'D:\python\python.exe' eve_cli.py --once "你好，介绍一下你自己"
 ```
 
-> v0.4.2 起入口是 `eve_cli.py`，原来的 `python -m eve` 已不再可用。
+界面长这样：空态居中一枚莫比乌斯，开口说话后它缩进顶栏，把空间让给对话。
+
+![空态](docs/assets/gui-empty.png)
+![对话](docs/assets/gui-chat.png)
+
+> v0.4.2 起入口拆成 `eve_cli.py` / `eve_gui.py`，原来的 `python -m eve` 已不再可用。
 
 ## REPL 命令
 
@@ -106,7 +115,9 @@ model = "qwen3vl-4b"         # 档位只绑模型 id，不绑类型
 - [x] v0.4.1 修复：窗口标题异步变化导致的定位失败
 - [x] v0.4.2 结构重构：按功能拆成 `eve_core` / `eve_agent` / `eve_ui`
 - [x] v0.4.3 事件通道 + 人格状态机：事件总线、抗议分级、颜文字节流、单元测试
-- [ ] v0.5 界面：PySide6 主窗口 + 莫比乌斯 + 悬浮球
+- [x] v0.5.0 主窗口：PySide6 无边框窗口、参数化莫比乌斯、事件驱动状态、agent 跑在子线程
+- [ ] v0.5.1 悬浮球：玻璃球 + 光点眼 + 气泡汇报
+- [ ] v0.5.2 模型面板：选 GGUF / 切云端 / 存 key
 - [ ] v0.6 语音：两段式唤醒 + ASR + piper TTS
 - [ ] v0.7 打包：PyInstaller spec + 首次运行向导
 
