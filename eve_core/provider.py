@@ -136,6 +136,70 @@ class OpenAICompatProvider:
         )
 
 
+    def stream(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+        *,
+        max_tokens: int = 512,
+        temperature: float = 0.7,
+    ):
+        """SSE 流式，逐段吐出文本。
+
+        只走文本路径：工具调用的参数是分片到达的，拼装逻辑复杂且容易错，
+        所以带工具的档位仍然使用 chat()。
+        """
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "stream": True,
+        }
+        if tools:
+            payload["tools"] = tools
+
+        body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        req = urllib.request.Request(
+            self._url,
+            data=body,
+            method="POST",
+            headers={
+                "Content-Type": "application/json; charset=utf-8",
+                "Authorization": f"Bearer {self._key}",
+                "Accept": "text/event-stream",
+            },
+        )
+
+        try:
+            response = urllib.request.urlopen(req, timeout=self.cfg.timeout)
+        except urllib.error.HTTPError as exc:
+            detail = exc.read().decode("utf-8", "replace")[:600]
+            raise ProviderError(f"{self.name}: HTTP {exc.code} — {detail}") from exc
+        except urllib.error.URLError as exc:
+            raise ProviderError(
+                f"{self.name}: 连不上 {self.cfg.base_url}（{exc.reason}）"
+            ) from exc
+
+        with response:
+            for raw in response:
+                line = raw.decode("utf-8", "replace").strip()
+                if not line or not line.startswith("data:"):
+                    continue
+                data = line[5:].strip()
+                if data in ("[DONE]", ""):
+                    continue
+                try:
+                    obj = json.loads(data)
+                except json.JSONDecodeError:
+                    continue
+                for choice in obj.get("choices") or []:
+                    delta = choice.get("delta") or {}
+                    piece = delta.get("content")
+                    if piece:
+                        yield piece
+
+
 def build_provider(cfg: ProviderConfig) -> Provider:
     if cfg.type == "openai_compatible":
         return OpenAICompatProvider(cfg)

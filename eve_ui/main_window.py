@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
-import html
-
-from PySide6.QtCore import QEasingCurve, QPropertyAnimation, Qt
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtCore import Qt
+from PySide6.QtGui import (
+    QColor,
+    QFont,
+    QPainter,
+    QPen,
+    QTextBlockFormat,
+    QTextCharFormat,
+    QTextCursor,
+)
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -38,6 +44,8 @@ class ChatWindow(QWidget):
         self._busy = False
         self._started_chat = False
         self._status_timer = None
+        self._streaming = False
+        self._stream_anchor = 0
 
         self._build()
         self._bridge = AgentBridge(config_path, self)
@@ -54,7 +62,7 @@ class ChatWindow(QWidget):
         root.addWidget(self._build_top_bar())
 
         body = QVBoxLayout()
-        body.setContentsMargins(48, 4, 48, 0)
+        body.setContentsMargins(96, 4, 96, 0)
         body.setSpacing(0)
 
         self.mobius = MobiusWidget(self, 220)
@@ -82,6 +90,22 @@ class ChatWindow(QWidget):
             f"color: {theme.TEXT2}; font-family: {theme.FONT_STACK}; font-size: 13px;"
         )
         hero.addWidget(self.subtitle)
+
+        # 空态给三个入口，比一片空白有用，也顺便教了用户能干什么
+        self.chips = QWidget(self.hero)
+        chip_row = QHBoxLayout(self.chips)
+        chip_row.setContentsMargins(0, 20, 0, 0)
+        chip_row.setSpacing(10)
+        chip_row.addStretch(1)
+        for label in ("打开记事本", "解释一下什么是 Agent", "帮我理一下今天的待办"):
+            chip = QPushButton(label, self.chips)
+            chip.setCursor(Qt.PointingHandCursor)
+            chip.setStyleSheet(theme.CHIP_QSS)
+            chip.clicked.connect(lambda _=False, text=label: self._use_chip(text))
+            chip_row.addWidget(chip)
+        chip_row.addStretch(1)
+        hero.addWidget(self.chips)
+
         hero.addStretch(1)
 
         body.addWidget(self.hero, 1)
@@ -104,7 +128,7 @@ class ChatWindow(QWidget):
         root.addLayout(body, 1)
 
         input_row = QHBoxLayout()
-        input_row.setContentsMargins(48, 10, 48, 28)
+        input_row.setContentsMargins(96, 10, 96, 28)
         input_row.setSpacing(10)
 
         self.input = QLineEdit(self)
@@ -184,6 +208,12 @@ class ChatWindow(QWidget):
         self._set_state("thinking")
         self._bridge.ask(text)
 
+    def _use_chip(self, text: str) -> None:
+        if self._busy:
+            return
+        self.input.setText(text)
+        self._send()
+
     def _set_state(self, state: str) -> None:
         for widget in self._mobii:
             widget.set_state(state)
@@ -211,17 +241,76 @@ class ChatWindow(QWidget):
     def _set_status(self, text: str) -> None:
         self.status.setText(text)
 
-    def _append(self, who: str, text: str, color: str) -> None:
-        body = html.escape(text).replace("\n", "<br/>")
-        block = (
-            '<div style="margin: 16px 0;">'
-            f'<div style="color: {theme.TEXT2}; font-size: 11px; margin-bottom: 4px;">{who}</div>'
-            f'<div style="color: {color}; font-size: 14px; line-height: 170%;">{body}</div>'
-            "</div>"
-        )
-        self.browser.append(block)
+    # ---------- 消息渲染（用 QTextCursor，便于流式追加）----------
+
+    def _body_format(self, color: str) -> QTextCharFormat:
+        fmt = QTextCharFormat()
+        fmt.setForeground(QColor(color))
+        font = QFont("Microsoft YaHei UI")
+        font.setPointSizeF(10.5)
+        fmt.setFont(font)
+        return fmt
+
+    def _who_format(self) -> QTextCharFormat:
+        fmt = QTextCharFormat()
+        fmt.setForeground(QColor(theme.TEXT2))
+        font = QFont("Microsoft YaHei UI")
+        font.setPointSizeF(8.5)
+        fmt.setFont(font)
+        return fmt
+
+    def _end_cursor(self) -> QTextCursor:
+        cursor = self.browser.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        return cursor
+
+    def _scroll_to_bottom(self) -> None:
         bar = self.browser.verticalScrollBar()
         bar.setValue(bar.maximum())
+
+    def _append(self, who: str, text: str, color: str) -> None:
+        cursor = self._end_cursor()
+        if not self.browser.document().isEmpty():
+            block = QTextBlockFormat()
+            block.setTopMargin(18)
+            cursor.insertBlock(block)
+        cursor.insertText(who, self._who_format())
+        cursor.insertBlock()
+        cursor.insertText(text, self._body_format(color))
+        self.browser.setTextCursor(cursor)
+        self._scroll_to_bottom()
+
+    def _stream_begin(self) -> None:
+        cursor = self._end_cursor()
+        if not self.browser.document().isEmpty():
+            block = QTextBlockFormat()
+            block.setTopMargin(18)
+            cursor.insertBlock(block)
+        cursor.insertText("伊芙", self._who_format())
+        cursor.insertBlock()
+        self._stream_anchor = cursor.position()
+        self._streaming = True
+        self.browser.setTextCursor(cursor)
+
+    def _stream_chunk(self, delta: str) -> None:
+        if not self._streaming:
+            self._stream_begin()
+        cursor = self._end_cursor()
+        cursor.insertText(delta, self._body_format(theme.TEXT0))
+        self.browser.setTextCursor(cursor)
+        self._scroll_to_bottom()
+
+    def _stream_end(self, final: str) -> None:
+        """用最终文本覆盖流式内容——人格层可能剥掉了颜文字，两者会不一致。"""
+        if not self._streaming:
+            return
+        cursor = self.browser.textCursor()
+        cursor.setPosition(self._stream_anchor)
+        cursor.movePosition(QTextCursor.End, QTextCursor.KeepAnchor)
+        cursor.insertText(final, self._body_format(theme.TEXT0))
+        self.browser.setTextCursor(cursor)
+        self._streaming = False
+        self._scroll_to_bottom()
 
     # ---------- 事件 ----------
 
@@ -242,6 +331,11 @@ class ChatWindow(QWidget):
         elif kind == "thinking":
             self._set_state("thinking")
             self._set_status("思考中…")
+        elif kind == "reply_chunk":
+            if not self._streaming:
+                self._set_state("streaming")
+                self._set_status("")
+            self._stream_chunk(data.get("text", ""))
         elif kind == "tool_start":
             self._set_state("acting")
             self._set_status(f"执行 {data.get('name')}…")
@@ -253,12 +347,17 @@ class ChatWindow(QWidget):
             self._set_status("出错了")
 
     def _on_replied(self, text: str) -> None:
-        self._set_state("idle")
-        self._append("伊芙", text, theme.TEXT0)
+        if self._streaming:
+            self._stream_end(text)
+            self._set_state("idle")
+        else:
+            self._set_state("idle")
+            self._append("伊芙", text, theme.TEXT0)
         self._set_status("")
         self._set_busy(False)
 
     def _on_failed(self, message: str) -> None:
+        self._streaming = False
         self._set_state("error")
         self._append("系统", message, theme.DANGER)
         self._set_status("")

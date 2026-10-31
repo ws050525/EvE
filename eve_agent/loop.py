@@ -7,6 +7,7 @@ v0.4 起不再自己造 Provider，而是向 RuntimeManager 要：
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime
 from typing import Any, Callable
 
@@ -127,6 +128,44 @@ class Agent:
             out[0] = {"role": "system", "content": out[0]["content"] + "\n\n" + extra}
         return out
 
+    # ---------- 流式 ----------
+
+    def _stream_once(self, user_text: str, step: int) -> str | None:
+        """流式跑一轮；一个 token 都没吐时返回 None，让调用方回退到普通请求。"""
+        started = time.perf_counter()
+        parts: list[str] = []
+        try:
+            for delta in self.provider.stream(
+                self._outgoing(),
+                None,
+                max_tokens=self.mode.max_tokens,
+                temperature=self.mode.temperature,
+            ):
+                parts.append(delta)
+                self.bus.emit("reply_chunk", text=delta)
+        except Exception as exc:
+            self.bus.emit("error", message=str(exc), step=step)
+            raise
+
+        if not parts:
+            return None
+
+        raw = "".join(parts)
+        latency_ms = int((time.perf_counter() - started) * 1000)
+        self.messages.append({"role": "assistant", "content": raw})
+        final = self.persona.decorate(raw, mode=self.mode_name)
+        self._log(
+            ChatResult(content=raw, model=self.model_id, latency_ms=latency_ms), step, user_text
+        )
+        self.bus.emit(
+            "reply_done",
+            text=final,
+            latency_ms=latency_ms,
+            usage={},
+            model=self.model_id,
+        )
+        return final
+
     # ---------- 主循环 ----------
 
     def send(self, text: str, confirm: ConfirmFn | None = None) -> str:
@@ -146,6 +185,13 @@ class Agent:
 
         for step in range(1, MAX_STEPS + 1):
             self.bus.emit("thinking", step=step, model=self.model_id)
+
+            # 没有工具时才走流式：工具调用不适合在 MVP 里分片拼装
+            if not schemas:
+                streamed = self._stream_once(text, step)
+                if streamed is not None:
+                    return streamed
+
             try:
                 result = self.provider.chat(
                     self._outgoing(),

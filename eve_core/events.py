@@ -21,6 +21,7 @@ ENGINE_READY = "engine_ready"
 ENGINE_STOPPED = "engine_stopped"
 USER_MESSAGE = "user_message"
 THINKING = "thinking"
+REPLY_CHUNK = "reply_chunk"
 TOOL_START = "tool_start"
 TOOL_END = "tool_end"
 REPLY_DONE = "reply_done"
@@ -32,6 +33,7 @@ KNOWN_KINDS = (
     ENGINE_STOPPED,
     USER_MESSAGE,
     THINKING,
+    REPLY_CHUNK,
     TOOL_START,
     TOOL_END,
     REPLY_DONE,

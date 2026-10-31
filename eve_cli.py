@@ -103,6 +103,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     status_line = StatusLine()
+    streamed = {"on": False}
 
     def on_event(ev) -> None:
         data = ev.data
@@ -114,6 +115,12 @@ def main(argv: list[str] | None = None) -> int:
             status_line.show("引擎已停止")
         elif ev.kind == "thinking":
             status_line.show("思考中…")
+        elif ev.kind == "reply_chunk":
+            if not streamed["on"]:
+                streamed["on"] = True
+                status_line.clear()
+            sys.stdout.write(data.get("text", ""))
+            sys.stdout.flush()
         elif ev.kind == "tool_start":
             status_line.show(f"调用 {data.get('name')}")
         elif ev.kind == "tool_end":
@@ -142,7 +149,10 @@ def main(argv: list[str] | None = None) -> int:
         finally:
             runtime.shutdown()
         status_line.clear()
-        print(reply.strip())
+        if not streamed["on"]:
+            print(reply.strip())
+        else:
+            print()
         return 0
 
     status = runtime.status()
@@ -271,9 +281,13 @@ def main(argv: list[str] | None = None) -> int:
             continue
 
         try:
+            streamed["on"] = False
             reply = agent.send(line, confirm=confirm)
             status_line.clear()
-            print(reply.strip())
+            if streamed["on"]:
+                print()
+            else:
+                print(reply.strip())
         except (ProviderError, ConfigError) as exc:
             status_line.clear()
             print(f"  调用失败：{exc}")

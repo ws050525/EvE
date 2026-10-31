@@ -76,8 +76,27 @@ QPushButton:disabled {{
 }}
 """
 
-BROWSER_QSS = f"""
-QTextBrowser {{
+CHIP_QSS = f"""
+QPushButton {{
+    background: transparent;
+    border: 1px solid {LINE};
+    border-radius: 15px;
+    color: {TEXT1};
+    font-family: {FONT_STACK};
+    font-size: 12px;
+    padding: 8px 16px;
+}}
+QPushButton:hover {{
+    border-color: #38424E;
+    background: {PANEL};
+    color: {TEXT0};
+}}
+QPushButton:pressed {{
+    background: {BUBBLE};
+}}
+"""
+
+BROWSER_QSS = f"""QTextBrowser {{
     background: transparent;
     border: none;
     color: {TEXT0};
