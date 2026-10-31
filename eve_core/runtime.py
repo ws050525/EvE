@@ -201,14 +201,22 @@ class RuntimeStatus:
 class RuntimeManager:
     """对外唯一入口：给我 model_id，还你一个能 chat 的 Provider。"""
 
-    def __init__(self, cfg: AppConfig):
+    def __init__(self, cfg: AppConfig, on_event=None):
         self.cfg = cfg
         self.keys = KeyStore(cfg.data_dir)
         self._provider: Provider | None = None
         self._model_id: str = ""
         self._engine: LocalEngine | None = None
         self._error: str = ""
+        # on_event(kind: str, data: dict) —— 可选，核心层不关心谁来听
+        self._notify = on_event or (lambda kind, data: None)
         atexit.register(self.shutdown)
+
+    def _emit(self, kind: str, **data) -> None:
+        try:
+            self._notify(kind, data)
+        except Exception:
+            pass
 
     # ---------- 核心 ----------
 
@@ -234,7 +242,14 @@ class RuntimeManager:
 
     def _start_local(self, model: ModelConfig) -> ProviderConfig:
         self._engine = LocalEngine(self.cfg, model)
+        self._emit("engine_starting", model_id=model.id, label=model.label)
         base_url = self._engine.start()
+        self._emit(
+            "engine_ready",
+            model_id=model.id,
+            load_seconds=self._engine.state.load_seconds,
+            port=self._engine.state.port,
+        )
         return ProviderConfig(
             name=model.id,
             base_url=base_url,
@@ -268,10 +283,13 @@ class RuntimeManager:
 
     def shutdown(self) -> None:
         if self._engine is not None:
+            was_running = self._engine.state.model_id
             try:
                 self._engine.stop()
             finally:
                 self._engine = None
+            if was_running:
+                self._emit("engine_stopped", model_id=was_running)
         if self._provider is not None:
             self._provider = None
         self._model_id = ""

@@ -11,9 +11,11 @@ from datetime import datetime
 from typing import Any, Callable
 
 from eve_core.config import AppConfig, ModeConfig
+from eve_core.events import EventBus
 from eve_core.provider import ChatResult, Provider
 from eve_core.runtime import RuntimeManager
 
+from .persona import Persona
 from .tools.registry import ToolRegistry, build_default_registry
 
 MAX_STEPS = 6
@@ -27,10 +29,13 @@ class Agent:
         cfg: AppConfig,
         mode_name: str | None = None,
         runtime: RuntimeManager | None = None,
+        bus: EventBus | None = None,
     ):
         self.cfg = cfg
-        self.runtime = runtime or RuntimeManager(cfg)
+        self.bus = bus or EventBus()
+        self.runtime = runtime or RuntimeManager(cfg, on_event=self._emit_runtime)
         self.registry: ToolRegistry = build_default_registry()
+        self.persona = Persona()
         self.mode_name = mode_name or cfg.default_mode
         self.mode: ModeConfig
         self.messages: list[dict[str, Any]] = []
@@ -106,24 +111,64 @@ class Agent:
     def reset(self) -> None:
         self._activate(self.mode_name, reset=True)
 
+    # ---------- 事件 ----------
+
+    def _emit_runtime(self, kind: str, data: dict[str, Any]) -> None:
+        """把核心层的事件转发到自己的总线。"""
+        self.bus.emit(kind, **data)
+
+    def _outgoing(self) -> list[dict[str, Any]]:
+        """把人格状态临时拼进 system prompt，不改动会话本身。"""
+        extra = self.persona.prompt_extra()
+        if not extra:
+            return self.messages
+        out = list(self.messages)
+        if out and out[0].get("role") == "system":
+            out[0] = {"role": "system", "content": out[0]["content"] + "\n\n" + extra}
+        return out
+
     # ---------- 主循环 ----------
 
     def send(self, text: str, confirm: ConfirmFn | None = None) -> str:
+        self.persona.observe_user(text)
+        self.bus.emit("user_message", text=text, protest_level=self.persona.protest_level)
         self.messages.append({"role": "user", "content": text})
-        schemas = self.registry.schemas(self.active_tools)
+
+        # 先确保模型可用：这样事件顺序是 engine_starting -> engine_ready -> thinking
+        try:
+            _ = self.provider
+        except Exception as exc:
+            self.bus.emit("error", message=str(exc), step=0)
+            raise
+
+        # 罢工时不给工具：模型只能说话，不能动手
+        schemas = self.registry.schemas(self.active_tools) if self.persona.allow_tools else []
 
         for step in range(1, MAX_STEPS + 1):
-            result = self.provider.chat(
-                self.messages,
-                schemas,
-                max_tokens=self.mode.max_tokens,
-                temperature=self.mode.temperature,
-            )
+            self.bus.emit("thinking", step=step, model=self.model_id)
+            try:
+                result = self.provider.chat(
+                    self._outgoing(),
+                    schemas,
+                    max_tokens=self.mode.max_tokens,
+                    temperature=self.mode.temperature,
+                )
+            except Exception as exc:
+                self.bus.emit("error", message=str(exc), step=step)
+                raise
             self._log(result, step, text)
 
             if not result.tool_calls:
                 self.messages.append({"role": "assistant", "content": result.content})
-                return result.content
+                final = self.persona.decorate(result.content, mode=self.mode_name)
+                self.bus.emit(
+                    "reply_done",
+                    text=final,
+                    latency_ms=result.latency_ms,
+                    usage=result.usage,
+                    model=result.model or self.model_id,
+                )
+                return final
 
             self.messages.append(
                 {
@@ -144,6 +189,7 @@ class Agent:
             )
 
             for call in result.tool_calls:
+                self.bus.emit("tool_start", name=call.name, args=call.arguments)
                 output = self.registry.dispatch(
                     call.name,
                     call.arguments,
@@ -151,6 +197,8 @@ class Agent:
                     confirm=confirm,
                     require_confirm=self.mode.require_confirm,
                 )
+                ok = not output.startswith(("[error]", "[denied]"))
+                self.bus.emit("tool_end", name=call.name, ok=ok, result=output[:200])
                 self._log_action(call.name, call.arguments, output)
                 self.messages.append(
                     {

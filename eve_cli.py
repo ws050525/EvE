@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import argparse
 import getpass
+import os
 import sys
 
 from eve_agent import Agent
@@ -27,12 +28,37 @@ HELP = """  /models              列出已配置的模型
   /scan                扫描磁盘上可用的 GGUF
   /mode <name>         切换档位（会重置上下文）
   /status              运行时状态（引擎、端口、加载耗时）
+  /persona             人格状态（抗议等级、连续命令数、颜文字节流）
   /stop                停止本地引擎，释放显存
   /key <id>            为云端模型保存 API Key（DPAPI 加密）
   /reset               清空上下文
   /tools               当前档位可用工具
   /where               当前 provider / 模型 / 端点
   /exit                退出"""
+
+
+class StatusLine:
+    """一行状态提示，用 \\r 原地刷新；非 TTY 时自动静默。"""
+
+    def __init__(self) -> None:
+        self.enabled = sys.stdout.isatty() or os.environ.get("EVE_STATUS") == "1"
+        self._width = 0
+
+    def show(self, text: str) -> None:
+        if not self.enabled:
+            return
+        line = f"  · {text}"
+        pad = max(0, self._width - len(line))
+        sys.stdout.write("\r" + line + " " * pad)
+        sys.stdout.flush()
+        self._width = len(line)
+
+    def clear(self) -> None:
+        if not self.enabled or self._width == 0:
+            return
+        sys.stdout.write("\r" + " " * self._width + "\r")
+        sys.stdout.flush()
+        self._width = 0
 
 
 def _kind_label(kind: str) -> str:
@@ -60,7 +86,6 @@ def main(argv: list[str] | None = None) -> int:
         print(f"配置错误：{exc}", file=sys.stderr)
         return 2
 
-    runtime = RuntimeManager(cfg)
     mode_name = args.mode or cfg.default_mode
 
     try:
@@ -69,12 +94,34 @@ def main(argv: list[str] | None = None) -> int:
         model = cfg.model(model_id)
         kind = model.detect_kind()
         # 模型按需加载：这里只建对象，不发请求，所以 /models /scan 都是秒回
-        agent = Agent(cfg, mode_name, runtime)
+        agent = Agent(cfg, mode_name)
+        runtime = agent.runtime
         if args.model:
             agent.switch_model(args.model)
     except (ConfigError, ProviderError, OSError) as exc:
         print(f"启动失败：{exc}", file=sys.stderr)
         return 2
+
+    status_line = StatusLine()
+
+    def on_event(ev) -> None:
+        data = ev.data
+        if ev.kind == "engine_starting":
+            status_line.show(f"加载模型 {data.get('label') or data.get('model_id')}…")
+        elif ev.kind == "engine_ready":
+            status_line.show(f"就绪（{data.get('load_seconds')}s）")
+        elif ev.kind == "engine_stopped":
+            status_line.show("引擎已停止")
+        elif ev.kind == "thinking":
+            status_line.show("思考中…")
+        elif ev.kind == "tool_start":
+            status_line.show(f"调用 {data.get('name')}")
+        elif ev.kind == "tool_end":
+            status_line.show(f"{data.get('name')} {'完成' if data.get('ok') else '失败'}")
+        elif ev.kind == "error":
+            status_line.clear()
+
+    agent.bus.subscribe(on_event)
 
     def confirm(spec, tool_args) -> bool:
         if args.yes:
@@ -87,12 +134,15 @@ def main(argv: list[str] | None = None) -> int:
         if kind == "local_gguf":
             print("（首次使用会拉起本地引擎，约 3–6 秒）", file=sys.stderr, flush=True)
         try:
-            print(agent.send(args.once, confirm=confirm).strip())
+            reply = agent.send(args.once, confirm=confirm)
         except (ProviderError, ConfigError) as exc:
+            status_line.clear()
             print(f"调用失败：{exc}", file=sys.stderr)
             return 1
         finally:
             runtime.shutdown()
+        status_line.clear()
+        print(reply.strip())
         return 0
 
     status = runtime.status()
@@ -142,6 +192,10 @@ def main(argv: list[str] | None = None) -> int:
                 mm = f"，mmproj: {item.mmproj.name}" if item.mmproj else ""
                 print(f"  {item.name}\n      {item.size_gb} GB  {item.quant}{mm}\n      {item.path}")
             print(f"  共 {len(found)} 个。要使用请在 config.toml 里加一个 [models.*] 段。")
+            continue
+        if line == "/persona":
+            snap = agent.persona.snapshot()
+            print("  " + "  ".join(f"{k}={v}" for k, v in snap.items()))
             continue
         if line == "/status":
             st = runtime.status()
@@ -217,10 +271,14 @@ def main(argv: list[str] | None = None) -> int:
             continue
 
         try:
-            print(agent.send(line, confirm=confirm).strip())
+            reply = agent.send(line, confirm=confirm)
+            status_line.clear()
+            print(reply.strip())
         except (ProviderError, ConfigError) as exc:
+            status_line.clear()
             print(f"  调用失败：{exc}")
         except KeyboardInterrupt:
+            status_line.clear()
             print("\n  已中断")
 
 

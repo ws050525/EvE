@@ -18,12 +18,13 @@
 ## 目录结构
 
 ```
-eve_core/     核心：配置、provider、运行时、模型扫描、DPAPI 密钥
-eve_agent/    agent 层：主循环、工具注册表、内置工具（桌面/基础）
+eve_core/     核心：配置、provider、运行时、模型扫描、DPAPI 密钥、事件总线
+eve_agent/    agent 层：主循环、人格状态机、工具注册表与内置工具
 eve_ui/       界面层（v0.5 开始填充，目前只有说明）
 eve_cli.py    命令行入口
 config.toml   模型与档位配置
 prompts/      各档位的 system prompt
+tests/        纯逻辑单元测试（不需要模型）
 docs/         设计文档与视觉稿
 models/       本地模型文件（不入版本库）
 logs/         会话日志与引擎日志（不入版本库）
@@ -59,6 +60,7 @@ logs/         会话日志与引擎日志（不入版本库）
 | `/scan` | 扫描 `model_dirs` 下可用的 GGUF，含量化等级与 mmproj 配对 |
 | `/mode <name>` | 切换档位（会重置上下文） |
 | `/status` | 运行时状态：引擎、端口、pid、加载耗时、日志路径 |
+| `/persona` | 人格状态：抗议等级、连续命令数、颜文字节流 |
 | `/stop` | 停止本地引擎，释放显存 |
 | `/key <id>` | 为云端模型保存 API Key（DPAPI 加密，不落明文） |
 | `/reset` `/tools` `/where` `/help` `/exit` | 常规 |
@@ -86,6 +88,15 @@ api_key_env = "EVE_CLOUD_API_KEY"
 model = "qwen3vl-4b"         # 档位只绑模型 id，不绑类型
 ```
 
+## 测试
+
+```powershell
+# 纯逻辑测试，不需要模型、不联网
+& 'D:\python\python.exe' tests\test_persona.py
+```
+
+覆盖：命令识别、抗议分级、道歉复位、颜文字节流与禁用场合。
+
 ## 状态
 
 - [x] v0.1 骨架：配置、provider 抽象、多轮对话、切档、日志
@@ -94,7 +105,8 @@ model = "qwen3vl-4b"         # 档位只绑模型 id，不绑类型
 - [x] v0.4 模型抽象：ModelCatalog + RuntimeManager，本地/云端统一切换，引擎懒启动
 - [x] v0.4.1 修复：窗口标题异步变化导致的定位失败
 - [x] v0.4.2 结构重构：按功能拆成 `eve_core` / `eve_agent` / `eve_ui`
-- [ ] v0.5 界面：事件通道 + 主窗口 + 莫比乌斯 + 悬浮球 + 人格状态机
+- [x] v0.4.3 事件通道 + 人格状态机：事件总线、抗议分级、颜文字节流、单元测试
+- [ ] v0.5 界面：PySide6 主窗口 + 莫比乌斯 + 悬浮球
 - [ ] v0.6 语音：两段式唤醒 + ASR + piper TTS
 - [ ] v0.7 打包：PyInstaller spec + 首次运行向导
 
