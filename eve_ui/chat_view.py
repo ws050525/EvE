@@ -115,6 +115,50 @@ class MessageRow(QWidget):
         self.bubble.updateGeometry()
 
 
+class ToolRow(QWidget):
+    """工具调用的单行提示：居中小胶囊，执行完原地改状态。"""
+
+    def __init__(self, name: str, args: dict, parent=None):
+        super().__init__(parent)
+        preview = "，".join(f"{k}={v}" for k, v in args.items()) or "无参数"
+        self.name = name
+        self.label = QLabel(f"⚙ {name}（{preview}）", self)
+        self.label.setAlignment(Qt.AlignCenter)
+        self.label.setWordWrap(True)
+        self.label.setMaximumWidth(MAX_BUBBLE)
+        self.label.setStyleSheet(
+            f"color: {theme.TEXT1}; background: {theme.PANEL};"
+            f" border: 1px solid {theme.LINE}; border-radius: 10px;"
+            f" padding: 6px 12px; font-family: {theme.FONT_STACK}; font-size: 11px;"
+        )
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        row.addStretch(1)
+        row.addWidget(self.label)
+        row.addStretch(1)
+
+    def set_result(self, ok: bool, detail: str = "") -> None:
+        mark = "✓" if ok else "✕"
+        color = theme.TEXT1 if ok else theme.DANGER
+        text = f"{mark} {self.name}"
+        if detail:
+            # 工具返回值自带 [ok]/[error] 前缀，和前面的 ✓ 重复了
+            clean = detail.strip()
+            for prefix in ("[ok]", "[error]", "[denied]"):
+                if clean.startswith(prefix):
+                    clean = clean[len(prefix):].strip()
+                    break
+            short = clean if len(clean) <= 64 else clean[:64] + "…"
+            if short:
+                text += f" · {short}"
+        self.label.setText(text)
+        self.label.setStyleSheet(
+            f"color: {color}; background: {theme.PANEL};"
+            f" border: 1px solid {theme.LINE}; border-radius: 10px;"
+            f" padding: 6px 12px; font-family: {theme.FONT_STACK}; font-size: 11px;"
+        )
+
+
 class ChatView(QScrollArea):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -188,6 +232,24 @@ class ChatView(QScrollArea):
         row = MessageRow(role, text, self._container)
         self._insert(row)
         self._fade_in(row)
+        self._scroll_bottom()
+
+    def add_tool(self, name: str, args: dict) -> ToolRow:
+        row = ToolRow(name, args, self._container)
+        self._insert(row)
+        self._fade_in(row)
+        self._scroll_bottom()
+        return row
+
+    def add_note(self, text: str) -> None:
+        """居中的一行说明，用于档位切换之类的系统提示。"""
+        label = QLabel(text, self._container)
+        label.setAlignment(Qt.AlignCenter)
+        label.setStyleSheet(
+            f"color: {theme.TEXT2}; font-family: {theme.FONT_STACK};"
+            " font-size: 11px; padding: 4px 0;"
+        )
+        self._insert(label)
         self._scroll_bottom()
 
     def begin_stream(self) -> None:

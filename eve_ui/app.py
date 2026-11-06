@@ -18,10 +18,17 @@ def main(argv: list[str] | None = None) -> int:
 
     window = ChatWindow()
     window.show()
+    app.aboutToQuit.connect(window.shutdown_agent)
+
+    mode = os.environ.get("EVE_MODE")
+    if mode:
+        delay = int(os.environ.get("EVE_MODE_DELAY", "1200"))
+        QTimer.singleShot(delay, lambda: window._switch_mode(mode))
 
     demo = os.environ.get("EVE_DEMO")
     if demo:
-        QTimer.singleShot(2500, lambda: window.demo_send(demo))
+        delay = int(os.environ.get("EVE_DEMO_DELAY", "2500"))
+        QTimer.singleShot(delay, lambda: window.demo_send(demo))
 
     # 开发期：窗口自身截图后退出，用于把界面图放进文档
     shot = os.environ.get("EVE_SHOT")

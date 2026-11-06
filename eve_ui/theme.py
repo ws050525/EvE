@@ -96,6 +96,42 @@ QPushButton:pressed {{
 }}
 """
 
+MODE_CHIP_QSS = f"""
+QPushButton {{
+    color: {TEXT1};
+    background: {PANEL};
+    border: 1px solid {LINE};
+    border-radius: 10px;
+    padding: 0 10px;
+    font-family: {FONT_STACK};
+    font-size: 11px;
+}}
+QPushButton:hover {{
+    color: {TEXT0};
+    border-color: #3A4350;
+}}
+QPushButton::menu-indicator {{ width: 0; }}
+"""
+
+MENU_QSS = f"""
+QMenu {{
+    background: {PANEL};
+    border: 1px solid {LINE};
+    border-radius: 10px;
+    padding: 6px;
+    color: {TEXT0};
+    font-family: {FONT_STACK};
+    font-size: 12px;
+}}
+QMenu::item {{
+    padding: 7px 22px 7px 14px;
+    border-radius: 6px;
+}}
+QMenu::item:selected {{
+    background: {BUBBLE};
+}}
+"""
+
 BROWSER_QSS = f"""QTextBrowser {{
     background: transparent;
     border: none;

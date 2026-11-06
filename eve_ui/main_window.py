@@ -8,6 +8,8 @@
 
 from __future__ import annotations
 
+import os
+
 from PySide6.QtCore import (
     QEasingCurve,
     QPoint,
@@ -23,6 +25,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QMenu,
+    QMessageBox,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -53,11 +57,16 @@ class ChatWindow(QWidget):
         self._busy = False
         self._started_chat = False
         self._streaming = False
+        self._modes: list[str] = []
+        self._mode = "chat"
+        self._switching = False
+        self._tool_row = None
 
         self._build()
-        self._bridge = AgentBridge(config_path, self)
+        self._bridge = AgentBridge(config_path, self, autostart=False)
         self._wire()
         self._bridge.ready.connect(lambda *_: self._bridge.preload())
+        self._bridge.start()
 
     # ---------- 构建 ----------
 
@@ -125,13 +134,11 @@ class ChatWindow(QWidget):
         layout.addWidget(self.dot)
         layout.addSpacing(4)
 
-        self.mode_chip = QLabel("chat", bar)
+        self.mode_chip = QPushButton("chat", bar)
         self.mode_chip.setFixedHeight(20)
-        self.mode_chip.setStyleSheet(
-            f"color: {theme.TEXT1}; background: {theme.PANEL};"
-            f" border: 1px solid {theme.LINE}; border-radius: 10px;"
-            f" padding: 0 9px; font-family: {theme.FONT_STACK}; font-size: 11px;"
-        )
+        self.mode_chip.setCursor(Qt.PointingHandCursor)
+        self.mode_chip.setStyleSheet(theme.MODE_CHIP_QSS)
+        self.mode_chip.clicked.connect(self._open_mode_menu)
         layout.addWidget(self.mode_chip, 0, Qt.AlignVCenter)
         layout.addSpacing(4)
 
@@ -220,11 +227,17 @@ class ChatWindow(QWidget):
         self._bridge.event.connect(self._on_event)
         self._bridge.replied.connect(self._on_replied)
         self._bridge.failed.connect(self._on_failed)
+        self._bridge.mode_changed.connect(self._on_mode_changed)
+        self._bridge.modes_ready.connect(self._on_modes_ready)
+        self._bridge.confirm_required.connect(self._on_confirm_required)
 
     # ---------- 交互 ----------
 
     def _send(self) -> None:
         if self._busy:
+            return
+        if self._switching:
+            self._set_status("正在切换档位，稍等一下…")
             return
         text = self.input.text().strip()
         if not text:
@@ -242,6 +255,62 @@ class ChatWindow(QWidget):
             return
         self.input.setText(text)
         self._send()
+
+    # ---------- 档位 ----------
+
+    def _open_mode_menu(self) -> None:
+        if self._busy:
+            return
+        menu = QMenu(self)
+        menu.setStyleSheet(theme.MENU_QSS)
+        for name in self._modes or ["chat", "desktop", "work"]:
+            action = menu.addAction(name)
+            action.setCheckable(True)
+            action.setChecked(name == self._mode)
+            action.triggered.connect(lambda _=False, m=name: self._switch_mode(m))
+        menu.exec(self.mode_chip.mapToGlobal(QPoint(0, self.mode_chip.height() + 4)))
+
+    def _switch_mode(self, mode: str) -> None:
+        if mode == self._mode or self._busy or self._switching:
+            return
+        self._switching = True
+        self._set_status(f"切换到 {mode} 档…")
+        self._bridge.set_mode(mode)
+
+    def _on_mode_changed(self, mode: str, model_id: str) -> None:
+        self._mode = mode
+        self._switching = False
+        self.mode_chip.setText(mode)
+        self._set_status("")
+        # 不清空对话：切断上下文的是 agent，界面没必要把用户刚说的话抹掉
+        if self._started_chat:
+            self.chat.add_note(f"已切换到 {mode} 档 · {model_id}（上下文已重置）")
+
+    # ---------- 工具确认 ----------
+
+    def _on_confirm_required(self, name: str, args: dict) -> None:
+        preview = "，".join(f"{k}={v}" for k, v in args.items()) or "无参数"
+        if os.environ.get("EVE_AUTO_CONFIRM") == "1":
+            self.chat.add_note(f"已自动允许 {name}（测试模式）")
+            self._bridge.answer_confirm(True)
+            return
+
+        box = QMessageBox(self)
+        box.setWindowTitle("需要确认")
+        box.setIcon(QMessageBox.Question)
+        box.setText(f"伊芙想执行 <b>{name}</b>")
+        box.setInformativeText(f"参数：{preview}")
+        box.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        box.setDefaultButton(QMessageBox.No)
+        box.setStyleSheet(
+            f"QMessageBox {{ background: {theme.PANEL}; color: {theme.TEXT0};"
+            f" font-family: {theme.FONT_STACK}; font-size: 13px; }}"
+            f" QLabel {{ color: {theme.TEXT0}; }}"
+            f" QPushButton {{ background: {theme.BUBBLE}; color: {theme.TEXT0};"
+            f" border: 1px solid {theme.LINE}; border-radius: 8px; padding: 6px 16px; }}"
+        )
+        allowed = box.exec() == QMessageBox.Yes
+        self._bridge.answer_confirm(allowed)
 
     def _enter_chat(self) -> None:
         """空态 → 对话态：莫比乌斯从中间飞到顶栏，其余内容交叉淡入淡出。"""
@@ -350,6 +419,9 @@ class ChatWindow(QWidget):
     def _on_ready(self, model_id: str, label: str) -> None:
         self.model_label.setText(label or model_id)
 
+    def _on_modes_ready(self, modes: list) -> None:
+        self._modes = list(modes)
+
     def _on_event(self, kind: str, data: dict) -> None:
         if kind == "engine_starting":
             self._set_state("boot")
@@ -373,9 +445,13 @@ class ChatWindow(QWidget):
         elif kind == "tool_start":
             self._set_state("acting")
             self._set_status(f"执行 {data.get('name')}…")
+            self._tool_row = self.chat.add_tool(data.get("name", ""), data.get("args") or {})
         elif kind == "tool_end":
-            ok = data.get("ok")
+            ok = bool(data.get("ok"))
             self._set_status(f"{data.get('name')} {'完成' if ok else '失败'}")
+            if self._tool_row is not None:
+                self._tool_row.set_result(ok, str(data.get("result") or ""))
+                self._tool_row = None
         elif kind == "error":
             self._set_state("error")
             self._set_status("出错了")
@@ -422,7 +498,12 @@ class ChatWindow(QWidget):
         super().mouseReleaseEvent(event)
 
     def closeEvent(self, event) -> None:  # noqa: N802
+        self.shutdown_agent()
+        super().closeEvent(event)
+
+    def shutdown_agent(self) -> None:
+        """退出前必须停线程，否则会报 QThread destroyed while running。"""
         try:
             self._bridge.shutdown()
-        finally:
-            super().closeEvent(event)
+        except Exception:
+            pass
