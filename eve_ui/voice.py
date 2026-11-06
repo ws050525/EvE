@@ -8,9 +8,19 @@
 
 from __future__ import annotations
 
+import threading
+import time
+
 from PySide6.QtCore import QObject, QThread, Signal, Slot
 
-from eve_core.voice import AudioConfig, Recorder, SherpaRecognizer, VoiceSettings
+from eve_core.voice import (
+    SAMPLE_RATE,
+    AudioConfig,
+    KwsDetector,
+    Recorder,
+    SherpaRecognizer,
+    VoiceSettings,
+)
 
 
 class VoiceWorker(QObject):
@@ -95,5 +105,107 @@ class VoiceBridge(QObject):
             return
         self._thread.quit()
         if not self._thread.wait(3000):
+            self._thread.terminate()
+            self._thread.wait(1000)
+
+
+class WakeWorker(QObject):
+    """常听唤醒：麦克风一直开，听到「伊芙」就发出一声。
+
+    注意这个模型是流式的：必须按 ~100ms 分块喂，整段一次性喂进去检测不到。
+    """
+
+    woke = Signal(str)
+    failed = Signal(str)
+
+    CHUNK = 1600  # 100ms @16k
+
+    def __init__(self, settings: VoiceSettings):
+        super().__init__()
+        self._settings = settings
+        self._enabled = threading.Event()
+        self._stop = threading.Event()
+
+    @Slot()
+    def run(self) -> None:
+        try:
+            import sounddevice as sd
+        except Exception as exc:
+            self.failed.emit(f"没有麦克风：{exc}")
+            return
+
+        tokens, label = self._settings.wake_tokens()
+        if not tokens:
+            self.failed.emit(f"唤醒词「{label}」还没有拼音 token")
+            return
+
+        detector = KwsDetector(self._settings.kws_model, [(tokens, label)])
+        if not detector.available:
+            self.failed.emit(f"唤醒不可用：{detector.error}")
+            return
+
+        self._enabled.set()
+        try:
+            while not self._stop.is_set():
+                if not self._enabled.is_set():
+                    time.sleep(0.05)
+                    continue
+
+                # 每次进听都新开一路流：暂停时关掉，免得和按键录音抢设备
+                with sd.InputStream(
+                    samplerate=SAMPLE_RATE,
+                    channels=1,
+                    dtype="float32",
+                    blocksize=self.CHUNK,
+                ) as stream:
+                    detector.reset()
+                    while self._enabled.is_set() and not self._stop.is_set():
+                        data, _ = stream.read(self.CHUNK)
+                        samples = data[:, 0] if getattr(data, "ndim", 1) > 1 else data
+                        hit = detector.accept(samples)
+                        if hit:
+                            self._enabled.clear()
+                            self.woke.emit(hit)
+                            break
+        except Exception as exc:
+            self.failed.emit(f"唤醒监听出错：{type(exc).__name__}: {exc}")
+
+    def set_enabled(self, value: bool) -> None:
+        if value:
+            self._enabled.set()
+        else:
+            self._enabled.clear()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._enabled.clear()
+
+
+class WakeBridge(QObject):
+    woke = Signal(str)
+    failed = Signal(str)
+
+    def __init__(self, settings: VoiceSettings, parent=None):
+        super().__init__(parent)
+        self._thread = QThread()
+        self._worker = WakeWorker(settings)
+        self._worker.moveToThread(self._thread)
+        self._thread.started.connect(self._worker.run)
+        self._worker.woke.connect(self.woke)
+        self._worker.failed.connect(self.failed)
+        self._thread.start()
+
+    def enable(self) -> None:
+        self._worker.set_enabled(True)
+
+    def disable(self) -> None:
+        self._worker.set_enabled(False)
+
+    def shutdown(self) -> None:
+        self._worker.stop()
+        if not self._thread.isRunning():
+            return
+        self._thread.quit()
+        if not self._thread.wait(4000):
             self._thread.terminate()
             self._thread.wait(1000)

@@ -100,7 +100,12 @@ class AgentWorker(QObject):
             bus = EventBus()
             bus.subscribe(self._on_event)
             self._agent = Agent(cfg, cfg.default_mode, bus=bus)
-            self.modes_ready.emit(sorted(cfg.modes))
+            self.modes_ready.emit(
+                [
+                    {"id": name, "label": mode.display}
+                    for name, mode in sorted(cfg.modes.items())
+                ]
+            )
             self._emit_keys()
             self._emit_limits()
             self.ready.emit(self._agent.model_id, cfg.model(self._agent.model_id).label)

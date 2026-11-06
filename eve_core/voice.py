@@ -29,7 +29,15 @@ from typing import Callable
 SAMPLE_RATE = 16000
 
 # 「伊芙」的常见误识别。ASR 对两字中文词的容错就这么点，宁可多写几个变体
-WAKE_VARIANTS = ("伊芙", "伊弗", "衣芙", "伊夫", "eve", "小伊")
+WAKE_VARIANTS = (
+    "伊芙",
+    "伊弗",
+    "衣芙",
+    "伊夫",
+    "衣服",  # 实测 paraformer 把「伊芙」听成这个，必须收
+    "eve",
+    "小伊",
+)
 
 _PUNCT = re.compile(r"[\s，。！？、,.!?；;：:\"'“”‘’()（）\[\]【】…—\-]+")
 _LEAD = re.compile(r"^[\s，。！？、,.!?；;：:\"'“”‘’()（）\[\]【】…—\-]+")
@@ -82,6 +90,55 @@ def _find_word_offset(text: str, variant: str) -> int:
     return index if matched == len(variant) else -1
 
 
+# ---------- 语音切档 ----------
+
+MODE_SYNONYMS = {
+    "chat": ("聊天", "闲聊", "陪聊"),
+    "desktop": ("桌面", "操作电脑", "电脑操作"),
+    "work": ("工作", "干活"),
+}
+
+_MODE_PREFIXES = ("切换到", "切到", "换到", "换成", "进入", "用", "打开")
+_MODE_SUFFIXES = ("模式", "档位", "档")
+
+
+def mode_aliases(labels: dict[str, str]) -> dict[str, str]:
+    """别名表：归一化后的说法 → mode_id。labels 是 {mode_id: 显示名}。"""
+    table: dict[str, str] = {}
+    for mode_id, label in labels.items():
+        for word in (label, mode_id, *MODE_SYNONYMS.get(mode_id, ())):
+            key = normalize(word)
+            if key:
+                table[key] = mode_id
+    return table
+
+
+def parse_mode_command(text: str, aliases: dict[str, str], max_chars: int = 10) -> str | None:
+    """「切换到工作」「桌面模式」这类指令 → mode_id；不像指令就返回 None。
+
+    刻意做得很窄：长度限制 + 必须整句就是档位名。宁可漏判（交给模型），
+    也别把「我在想工作的事」这种话当成切档。
+    """
+    raw = normalize(text)
+    if not raw or len(raw) > max_chars:
+        return None
+
+    for prefix in _MODE_PREFIXES:
+        if raw.startswith(prefix) and len(raw) > len(prefix):
+            raw = raw[len(prefix) :]
+            break
+
+    changed = True
+    while changed and raw:
+        changed = False
+        for suffix in _MODE_SUFFIXES:
+            if raw.endswith(suffix) and len(raw) > len(suffix):
+                raw = raw[: -len(suffix)]
+                changed = True
+
+    return aliases.get(raw)
+
+
 @dataclass
 class VoiceSettings:
     asr_model: str = "models/voice/sherpa-onnx-paraformer-zh-small-2024-03-09"
@@ -89,6 +146,22 @@ class VoiceSettings:
     wake_word: str = "伊芙"
     silence_ms: int = 900
     max_seconds: float = 20.0
+    kws_enabled: bool = True  # 常听唤醒：不用按键，说「伊芙」就进录音
+
+    def wake_tokens(self) -> tuple[str, str]:
+        """唤醒词的拼音 token（KWS 模型按声母+韵母建模）。"""
+        return _wake_tokens(self.wake_word)
+
+
+# 唤醒词 → 拼音 token。目前只覆盖「伊芙」；换词就在这里加一行。
+_WAKE_TOKENS = {
+    "伊芙": "y ī f ú",
+}
+
+
+def _wake_tokens(word: str) -> tuple[str, str]:
+    tokens = _WAKE_TOKENS.get(word)
+    return (tokens, word) if tokens else ("", word)
 
 
 @dataclass
@@ -277,3 +350,121 @@ class VoiceState:
     last_text: str = ""
     error: str = ""
     extras: dict = field(default_factory=dict)
+
+
+# ---------- 常听唤醒（KWS） ----------
+
+
+class KwsDetector:
+    """sherpa-onnx 关键词唤醒。
+
+    模型是拼音建模（声母 + 韵母），所以自定义唤醒词要写成拼音 token：
+    「伊芙」= `y ī f ú`。模型自带 keywords.txt 里有现成的写法可以照抄。
+    """
+
+    _WEIGHT_NAMES = (
+        "encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx",
+        "encoder-epoch-12-avg-2-chunk-16-left-64.onnx",
+        "encoder-epoch-99-avg-1-chunk-16-left-64.int8.onnx",
+        "encoder-epoch-99-avg-1-chunk-16-left-64.onnx",
+    )
+
+    def __init__(
+        self,
+        model_dir: str | Path,
+        keywords: list[tuple[str, str]],
+        threshold: float = 0.25,
+        score: float = 1.0,
+    ):
+        self.model_dir = Path(model_dir)
+        self.keywords = keywords
+        self.threshold = threshold
+        self.score = score
+        self.error = ""
+        self._spotter = None
+        self._stream = None
+
+    @property
+    def available(self) -> bool:
+        if not self.model_dir.is_dir():
+            self.error = f"KWS 模型目录不存在：{self.model_dir}"
+            return False
+        try:
+            import sherpa_onnx  # noqa: F401
+        except Exception as exc:
+            self.error = f"没装 sherpa-onnx：{exc}"
+            return False
+        return True
+
+    def _weights(self) -> tuple[Path, Path, Path]:
+        for name in self._WEIGHT_NAMES:
+            encoder = self.model_dir / name
+            if not encoder.exists():
+                continue
+            stem = name.replace("encoder-", "").replace(".int8.onnx", "").replace(".onnx", "")
+            decoder = self.model_dir / f"decoder-{stem}.onnx"
+            joiner = self.model_dir / f"joiner-{stem}.onnx"
+            if decoder.exists() and joiner.exists():
+                return encoder, decoder, joiner
+        raise FileNotFoundError(f"{self.model_dir} 里找不到 KWS 权重")
+
+    def _keywords_file(self) -> Path:
+        path = self.model_dir / "eve_keywords.txt"
+        lines = [f"{tokens} @{label}" for tokens, label in self.keywords]
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return path
+
+    def _ensure(self):
+        if self._spotter is not None:
+            return self._spotter
+        import sherpa_onnx
+
+        encoder, decoder, joiner = self._weights()
+        self._spotter = sherpa_onnx.KeywordSpotter(
+            tokens=str(self.model_dir / "tokens.txt"),
+            encoder=str(encoder),
+            decoder=str(decoder),
+            joiner=str(joiner),
+            keywords_file=str(self._keywords_file()),
+            num_threads=2,
+            sample_rate=SAMPLE_RATE,
+            feature_dim=80,
+            keywords_score=self.score,
+            keywords_threshold=self.threshold,
+            num_trailing_blanks=1,
+        )
+        self._stream = self._spotter.create_stream()
+        return self._spotter
+
+    def accept(self, samples) -> str:
+        """喂**一小段**音频（约 100ms），命中关键词就返回它的标签，否则空串。
+
+        注意：必须增量喂。实测把一整段 1.4 秒的音频一次性 accept_waveform 进去，
+        KWS 什么都检测不到；按 100ms 分块喂，第 7 块就命中了。
+        这个模型是流式的，只喂不给它 decode 的机会等于没用。
+        """
+        import numpy as np
+
+        if samples is None or len(samples) == 0:
+            return ""
+
+        spotter = self._ensure()
+        self._stream.accept_waveform(SAMPLE_RATE, np.asarray(samples, dtype="float32"))
+
+        while spotter.is_ready(self._stream):
+            spotter.decode_stream(self._stream)
+            try:
+                result = str(spotter.get_result(self._stream) or "").strip()
+            except Exception:
+                result = str(getattr(self._stream, "result", "") or "").strip()
+            if result:
+                spotter.reset_stream(self._stream)
+                return result.lstrip("@")
+        return ""
+
+    def reset(self) -> None:
+        if self._spotter is not None and self._stream is not None:
+            try:
+                self._spotter.reset_stream(self._stream)
+            except Exception:
+                self._stream = self._spotter.create_stream()

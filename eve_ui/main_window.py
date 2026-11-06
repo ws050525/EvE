@@ -12,6 +12,7 @@ import os
 
 from PySide6.QtCore import (
     QEasingCurve,
+    QEvent,
     QPoint,
     QPropertyAnimation,
     QRect,
@@ -40,10 +41,10 @@ from .bridge import AgentBridge
 from .chat_view import ChatView
 from .mobius import MobiusWidget
 from .orb import OrbWindow
-from .voice import VoiceBridge
+from .voice import VoiceBridge, WakeBridge
 from eve_core.config import load_config
 from eve_core.pricing import format_money
-from eve_core.voice import VoiceSettings, match_wake
+from eve_core.voice import VoiceSettings, match_wake, mode_aliases, parse_mode_command
 
 GREETING = "今天想做点什么？"
 SUBTITLE = "说句话，或者让我帮你干点活"
@@ -288,6 +289,13 @@ class ChatWindow(QWidget):
         self._voice.transcript.connect(self._on_voice_text)
         self._voice.failed.connect(self._on_voice_failed)
         self._voice_listening = False
+        self._mode_aliases: dict[str, str] = {}
+
+        self._wake = None
+        if self._voice_settings.kws_enabled:
+            self._wake = WakeBridge(self._voice_settings, self)
+            self._wake.woke.connect(self._on_wake)
+            self._wake.failed.connect(lambda msg: self._set_status(msg))
         self._wire()
         # 指定了 EVE_MODEL 时跳过本地预加载，避免白起一次本地引擎
         if not os.environ.get("EVE_MODEL"):
@@ -458,6 +466,7 @@ class ChatWindow(QWidget):
         self.input.setStyleSheet(theme.INPUT_QSS)
         self.input.setMinimumHeight(44)
         self.input.returnPressed.connect(self._send)
+        self.input.installEventFilter(self)
 
         self.send_btn = QPushButton("发送", self)
         self.send_btn.setStyleSheet(theme.SEND_BUTTON_QSS)
@@ -469,7 +478,7 @@ class ChatWindow(QWidget):
         self.voice_btn.setStyleSheet(theme.VOICE_BUTTON_QSS)
         self.voice_btn.setMinimumHeight(44)
         self.voice_btn.setFixedWidth(72)
-        self.voice_btn.setToolTip("点一下开始说，说完停一下自动结束（Ctrl+Space）")
+        self.voice_btn.setToolTip("点一下开始说，说完停一下自动结束（空格 / Ctrl+Space）")
         self.voice_btn.clicked.connect(self._on_voice)
 
         row.addWidget(self.input, 1)
@@ -505,9 +514,22 @@ class ChatWindow(QWidget):
         if not text:
             return
         self.input.clear()
+
+        # 「切换到工作」这类话直接执行，不用绕一圈让模型来决定
+        target = parse_mode_command(text, self._mode_aliases)
+        if target is not None:
+            self._enter_chat()
+            self.chat.add_message("user", text)
+            if target == self._mode:
+                self.chat.add_note(f"现在就是{self._mode_label(target)}档")
+            else:
+                self._switch_mode(target)
+            return
+
         self._enter_chat()
         self.chat.add_message("user", text)
         self._set_busy(True)
+        self._pause_wake()
         self._set_status("思考中…")
         self._set_state("thinking")
         self._bridge.ask(text)
@@ -541,9 +563,37 @@ class ChatWindow(QWidget):
         if self._voice_listening:
             self._set_status("正在录音，说完停一下就会自动结束")
             return
+        self._pause_wake()
         self._voice_listening = True
         self.voice_btn.setText("在听…")
         self._voice.listen()
+
+    def _on_wake(self, word: str) -> None:
+        """常听唤醒命中：直接进录音，不用按键。"""
+        if self._busy or self._voice_listening:
+            return
+        self._set_status(f"听到「{word}」了，说吧…")
+        self._on_voice()
+
+    def _pause_wake(self) -> None:
+        if self._wake is not None:
+            self._wake.disable()
+
+    def _resume_wake(self) -> None:
+        if self._wake is not None and not self._busy and not self._voice_listening:
+            self._wake.enable()
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802
+        """空格键当说话键：输入框空着时按空格开始录音。
+
+        输入框里有字就照常打空格——不然聊天里一个空格都打不出来。
+        """
+        if obj is self.input and event.type() == QEvent.KeyPress:
+            if event.key() == Qt.Key_Space and not self.input.text().strip():
+                if not self._busy and not self._voice_listening:
+                    self._on_voice()
+                    return True
+        return super().eventFilter(obj, event)
 
     def _on_voice_state(self, state: str) -> None:
         if state == "listening":
@@ -558,6 +608,7 @@ class ChatWindow(QWidget):
             if not self._busy:
                 self._set_state("idle")
                 self._set_status("")
+            self._resume_wake()
 
     def _on_voice_text(self, text: str) -> None:
         hit, command = match_wake(text, self._voice_settings.wake_word)
@@ -573,6 +624,7 @@ class ChatWindow(QWidget):
         self._voice_listening = False
         self.voice_btn.setText("语音")
         self._set_status(message)
+        self._resume_wake()
 
     # ---------- 档位 ----------
 
@@ -581,11 +633,18 @@ class ChatWindow(QWidget):
             return
         menu = QMenu(self)
         menu.setStyleSheet(theme.MENU_QSS)
-        for name in self._modes or ["chat", "desktop", "work"]:
-            action = menu.addAction(name)
+        rows = self._modes or [
+            {"id": "chat", "label": "聊天"},
+            {"id": "desktop", "label": "桌面"},
+            {"id": "work", "label": "工作"},
+        ]
+        for row in rows:
+            action = menu.addAction(f"{row['label']}（{row['id']}）")
             action.setCheckable(True)
-            action.setChecked(name == self._mode)
-            action.triggered.connect(lambda _=False, m=name: self._switch_mode(m))
+            action.setChecked(row["id"] == self._mode)
+            action.triggered.connect(
+                lambda _=False, m=row["id"]: self._switch_mode(m)
+            )
         menu.exec(self.mode_chip.mapToGlobal(QPoint(0, self.mode_chip.height() + 4)))
 
     def _switch_mode(self, mode: str) -> None:
@@ -598,11 +657,13 @@ class ChatWindow(QWidget):
     def _on_mode_changed(self, mode: str, model_id: str) -> None:
         self._mode = mode
         self._switching = False
-        self.mode_chip.setText(mode)
+        self._refresh_mode_chip()
         self._set_status("")
         # 不清空对话：切断上下文的是 agent，界面没必要把用户刚说的话抹掉
         if self._started_chat:
-            self.chat.add_note(f"已切换到 {mode} 档 · {model_id}（上下文已重置）")
+            self.chat.add_note(
+                f"已切换到{self._mode_label(mode)}档 · {model_id}（上下文已重置）"
+            )
 
     # ---------- 模型 ----------
 
@@ -928,7 +989,26 @@ class ChatWindow(QWidget):
         self.model_label.setText(label or model_id)
 
     def _on_modes_ready(self, modes: list) -> None:
-        self._modes = list(modes)
+        # 新格式是 [{"id","label"}]，兼容老的 [str]
+        self._modes = [
+            m if isinstance(m, dict) else {"id": m, "label": m} for m in modes
+        ]
+        self._refresh_mode_chip()
+
+    def _mode_label(self, mode_id: str) -> str:
+        for row in self._modes:
+            if row["id"] == mode_id:
+                return str(row["label"])
+        return mode_id
+
+    def _refresh_mode_chip(self) -> None:
+        self.mode_chip.setText(self._mode_label(self._mode))
+        self.mode_chip.setToolTip(
+            " / ".join(f"{row['label']}（{row['id']}）" for row in self._modes)
+        )
+        self._mode_aliases = mode_aliases(
+            {row["id"]: row["label"] for row in self._modes}
+        )
 
     def _on_event(self, kind: str, data: dict) -> None:
         self._mirror_to_orb(kind, data)
@@ -994,6 +1074,7 @@ class ChatWindow(QWidget):
         self._set_state("idle")
         self._set_status(self._metrics_text())
         self._set_busy(False)
+        self._resume_wake()
 
     def _on_failed(self, message: str) -> None:
         self._streaming = False
@@ -1001,6 +1082,7 @@ class ChatWindow(QWidget):
         self.chat.add_message("system", message)
         self._set_status("")
         self._set_busy(False)
+        self._resume_wake()
 
     # ---------- 悬浮球 ----------
 
@@ -1088,6 +1170,11 @@ class ChatWindow(QWidget):
         """退出前必须停线程，否则会报 QThread destroyed while running。"""
         try:
             self._voice.shutdown()
+        except Exception:
+            pass
+        try:
+            if self._wake is not None:
+                self._wake.shutdown()
         except Exception:
             pass
         try:

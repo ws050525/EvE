@@ -110,7 +110,11 @@ class Agent:
         """切档会重置上下文——不同档位的 system prompt 与工具集不同，混着聊没有意义。"""
         self._model_override = None
         self._activate(name, reset=True)
-        return f"已切换到 {name} 档，模型 {self.model_id}"
+        return f"已切换到{self.mode.display}档，模型 {self.model_id}"
+
+    @property
+    def mode_label(self) -> str:
+        return self.mode.display
 
     def switch_model(self, model_id: str) -> str:
         """只为当前档位换模型，保留对话上下文。"""

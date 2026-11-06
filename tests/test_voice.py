@@ -18,7 +18,9 @@ from eve_core.voice import (
     SherpaRecognizer,
     VoiceSettings,
     match_wake,
+    mode_aliases,
     normalize,
+    parse_mode_command,
     wake_variants,
 )
 
@@ -87,6 +89,47 @@ def custom_wake_word_works():
     # 唤醒词必须出现在句首
     hit, rest = match_wake("帮我叫一下小爱", "小爱")
     assert not hit, (hit, rest)
+
+
+# ---------- 语音切档 ----------
+
+
+LABELS = {"chat": "聊天", "desktop": "桌面", "work": "工作"}
+
+
+@case
+def mode_switch_accepts_common_phrasings():
+    aliases = mode_aliases(LABELS)
+    cases = {
+        "切换到工作": "work",
+        "切到桌面": "desktop",
+        "换到聊天": "chat",
+        "进入工作模式": "work",
+        "工作模式": "work",
+        "桌面档": "desktop",
+        "聊天": "chat",
+        "用工作": "work",
+        "work": "work",
+        "干活": "work",
+    }
+    for text, expected in cases.items():
+        got = parse_mode_command(text, aliases)
+        assert got == expected, f"{text!r} -> {got!r}，期望 {expected!r}"
+
+
+@case
+def mode_switch_ignores_normal_speech():
+    aliases = mode_aliases(LABELS)
+    for text in (
+        "打开记事本",
+        "我在想工作的事",
+        "帮我写一个工作周报",
+        "今天聊点什么好呢",
+        "",
+        "   ",
+    ):
+        got = parse_mode_command(text, aliases)
+        assert got is None, f"{text!r} 不该被当成切档，得到 {got!r}"
 
 
 # ---------- 断句 ----------

@@ -24,6 +24,7 @@ work_root = "."              # 文件工具和 shell_exec 的根目录，越界�
 asr_model = "models/voice/sherpa-onnx-paraformer-zh-small-2024-03-09"
 kws_model = "models/voice/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01"
 wake_word = "伊芙"
+kws_enabled = true           # 常听唤醒：说「伊芙」就直接进录音，不用按键
 silence_ms = 900             # 说完后静音多久算一句结束
 max_seconds = 20             # 单次录音上限
 
@@ -87,6 +88,7 @@ price_cached_in = 0.9
 # ---------- 档位：prompt + 工具集 + 默认用哪个模型 ----------
 
 [modes.chat]
+label = "聊天"
 model = "qwen3vl-4b"
 system_prompt = "prompts/chat.md"
 tools = []
@@ -95,6 +97,7 @@ max_tokens = 512
 temperature = 0.7
 
 [modes.desktop]
+label = "桌面"
 model = "qwen3vl-4b"
 system_prompt = "prompts/desktop.md"
 tools = ["app_launch", "app_list", "window_list", "window_focus", "window_close", "key_type", "key_hotkey", "mouse_click", "screen_capture", "web_search", "http_get"]
@@ -103,6 +106,7 @@ max_tokens = 2048            # 写到编辑器里的内容可能很长；512 会
 temperature = 0.2
 
 [modes.work]
+label = "工作"
 model = "deepseek-flash"     # 默认 flash：够用且便宜；要更强就在模型菜单里临时换 pro
 system_prompt = "prompts/work.md"
 tools = ["web_search", "http_get", "fs_read", "fs_write", "fs_list", "shell_exec"]

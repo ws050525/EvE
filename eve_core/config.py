@@ -99,6 +99,11 @@ class ModeConfig:
     temperature: float = 0.7
     # 档位级上下文预算：0 = 继承 [app].context_tokens（同样是 0 就按模型窗口自动）
     context_tokens: int = 0
+    label: str = ""  # 显示名，例如「聊天」；留空就用内部 id
+
+    @property
+    def display(self) -> str:
+        return self.label or self.name
 
 
 @dataclass
@@ -225,6 +230,7 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
         wake_word=str(voice_raw.get("wake_word", VoiceSettings.wake_word)),
         silence_ms=int(voice_raw.get("silence_ms", VoiceSettings.silence_ms)),
         max_seconds=float(voice_raw.get("max_seconds", VoiceSettings.max_seconds)),
+        kws_enabled=bool(voice_raw.get("kws_enabled", VoiceSettings.kws_enabled)),
     )
 
     return AppConfig(

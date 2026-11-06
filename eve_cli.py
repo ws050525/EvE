@@ -69,6 +69,16 @@ def _kind_label(kind: str) -> str:
     return {"local_gguf": "本地", "cloud_api": "云端"}.get(kind, kind)
 
 
+def _resolve_mode(cfg, raw: str) -> str:
+    """允许 /mode 工作 这种用显示名切档。"""
+    if raw in cfg.modes:
+        return raw
+    for name, mode in cfg.modes.items():
+        if mode.display == raw:
+            return name
+    return raw
+
+
 def _price_label(cfg, model_id: str) -> str:
     """模型单价的一行说明：本地模型写"不计费"，云端写「入 / 出」两档。"""
     model = cfg.models.get(model_id)
@@ -211,8 +221,8 @@ def main(argv: list[str] | None = None) -> int:
     print(
         BANNER.format(
             version=__version__,
-            modes=" / ".join(sorted(cfg.modes)),
-            mode=agent.mode_name,
+            modes=" / ".join(m.display for _, m in sorted(cfg.modes.items())),
+            mode=agent.mode_label,
             model=f"{agent.model_id} · {model.label}",
             kind=_kind_label(model.detect_kind()),
             state=status.state,
@@ -223,7 +233,7 @@ def main(argv: list[str] | None = None) -> int:
 
     while True:
         try:
-            line = input(f"\033[1mEVE[{agent.mode_name}/{agent.model_id}]>\033[0m ").strip()
+            line = input(f"\033[1mEVE[{agent.mode_label}/{agent.model_id}]>\033[0m ").strip()
         except (EOFError, KeyboardInterrupt):
             print()
             runtime.shutdown()
@@ -378,10 +388,11 @@ def main(argv: list[str] | None = None) -> int:
         if line.startswith("/mode"):
             parts = line.split()
             if len(parts) != 2:
-                print(f"  用法：/mode <{'|'.join(sorted(cfg.modes))}>")
+                joined = "|".join(f"{m.display}" for _, m in sorted(cfg.modes.items()))
+                print(f"  用法：/mode <{joined}>")
                 continue
             try:
-                print("  " + agent.switch_mode(parts[1]))
+                print("  " + agent.switch_mode(_resolve_mode(cfg, parts[1])))
             except (ConfigError, ProviderError) as exc:
                 print(f"  切换失败：{exc}")
             if agent.warning:
