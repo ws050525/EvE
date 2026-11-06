@@ -88,7 +88,7 @@ temperature = 0.7
 [modes.desktop]
 model = "qwen3vl-4b"
 system_prompt = "prompts/desktop.md"
-tools = ["app_launch", "window_list", "window_focus", "window_close", "key_type", "key_hotkey", "mouse_click", "screen_capture", "web_search", "http_get"]
+tools = ["app_launch", "app_list", "window_list", "window_focus", "window_close", "key_type", "key_hotkey", "mouse_click", "screen_capture", "web_search", "http_get"]
 require_confirm = true
 max_tokens = 512
 temperature = 0.2
