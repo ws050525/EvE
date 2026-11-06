@@ -15,6 +15,12 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from .voice import VoiceSettings
+
+
+def _default_voice() -> VoiceSettings:
+    return VoiceSettings()
+
 
 class ConfigError(RuntimeError):
     """配置有问题时抛出，消息面向用户。"""
@@ -111,6 +117,7 @@ class AppConfig:
     keep_recent_turns: int = 4  # 压缩上下文时至少保留最近几轮原文
     tool_output_chars: int = 6000  # 单个工具结果最多入库多少字符
     max_steps: int = 12  # 单条消息最多走几步（工具调用来回算一步）
+    voice: "VoiceSettings" = field(default_factory=lambda: _default_voice())
 
     def model(self, model_id: str) -> ModelConfig:
         if model_id not in self.models:
@@ -211,6 +218,15 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
     if default_mode not in modes:
         raise ConfigError(f"default_mode '{default_mode}' 不在档位列表里")
 
+    voice_raw = data.get("voice", {})
+    voice = VoiceSettings(
+        asr_model=str(resolve(voice_raw.get("asr_model", VoiceSettings.asr_model))),
+        kws_model=str(resolve(voice_raw.get("kws_model", VoiceSettings.kws_model))),
+        wake_word=str(voice_raw.get("wake_word", VoiceSettings.wake_word)),
+        silence_ms=int(voice_raw.get("silence_ms", VoiceSettings.silence_ms)),
+        max_seconds=float(voice_raw.get("max_seconds", VoiceSettings.max_seconds)),
+    )
+
     return AppConfig(
         root=root,
         default_mode=default_mode,
@@ -226,4 +242,5 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
         keep_recent_turns=int(app.get("keep_recent_turns", 4)),
         tool_output_chars=int(app.get("tool_output_chars", 6000)),
         max_steps=max(1, int(app.get("max_steps", 12))),
+        voice=voice,
     )

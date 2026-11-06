@@ -18,6 +18,15 @@ max_steps = 12               # 单条消息最多走几步；之前是 6，长�
 # ---------- work 档的边界 ----------
 work_root = "."              # 文件工具和 shell_exec 的根目录，越界一律拒绝
 
+# ---------- 语音 ----------
+# 模型放在 models/voice/ 下（不进版本库）。识别用 sherpa-onnx，只依赖 onnxruntime。
+[voice]
+asr_model = "models/voice/sherpa-onnx-paraformer-zh-small-2024-03-09"
+kws_model = "models/voice/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01"
+wake_word = "伊芙"
+silence_ms = 900             # 说完后静音多久算一句结束
+max_seconds = 20             # 单次录音上限
+
 # ---------- 推理引擎（本地模型的运行容器）----------
 
 [engines.llamacpp]

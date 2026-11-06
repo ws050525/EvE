@@ -154,6 +154,26 @@ QFrame#ConfirmCard {{
 }}
 """
 
+# 输入框旁边的语音按钮
+VOICE_BUTTON_QSS = f"""
+QPushButton {{
+    background: {PANEL};
+    border: 1px solid {LINE};
+    border-radius: 10px;
+    color: {TEXT1};
+    font-family: {FONT_STACK};
+    font-size: 12px;
+    padding: 0 14px;
+}}
+QPushButton:hover {{
+    color: {TEXT0};
+    border-color: #3A4350;
+}}
+QPushButton:disabled {{
+    color: {TEXT2};
+}}
+"""
+
 # API Key 设置对话框
 DIALOG_QSS = f"""
 QDialog {{

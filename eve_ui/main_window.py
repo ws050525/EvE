@@ -19,7 +19,7 @@ from PySide6.QtCore import (
     Qt,
     Signal,
 )
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtGui import QColor, QKeySequence, QPainter, QPen, QShortcut
 from PySide6.QtWidgets import (
     QApplication,
     QComboBox,
@@ -40,7 +40,10 @@ from .bridge import AgentBridge
 from .chat_view import ChatView
 from .mobius import MobiusWidget
 from .orb import OrbWindow
+from .voice import VoiceBridge
+from eve_core.config import load_config
 from eve_core.pricing import format_money
+from eve_core.voice import VoiceSettings, match_wake
 
 GREETING = "今天想做点什么？"
 SUBTITLE = "说句话，或者让我帮你干点活"
@@ -278,6 +281,13 @@ class ChatWindow(QWidget):
         self._orb.clicked.connect(self._restore_from_orb)
         self._orb.quit_requested.connect(self._quit_app)
         self._orb.confirm_answered.connect(self._resolve_pending)
+
+        self._voice_settings = self._load_voice_settings(config_path)
+        self._voice = VoiceBridge(self._voice_settings, self)
+        self._voice.state_changed.connect(self._on_voice_state)
+        self._voice.transcript.connect(self._on_voice_text)
+        self._voice.failed.connect(self._on_voice_failed)
+        self._voice_listening = False
         self._wire()
         # 指定了 EVE_MODEL 时跳过本地预加载，避免白起一次本地引擎
         if not os.environ.get("EVE_MODEL"):
@@ -454,7 +464,16 @@ class ChatWindow(QWidget):
         self.send_btn.setMinimumHeight(44)
         self.send_btn.clicked.connect(self._send)
 
+        self.voice_btn = QPushButton("语音", self)
+        self.voice_btn.setCursor(Qt.PointingHandCursor)
+        self.voice_btn.setStyleSheet(theme.VOICE_BUTTON_QSS)
+        self.voice_btn.setMinimumHeight(44)
+        self.voice_btn.setFixedWidth(72)
+        self.voice_btn.setToolTip("点一下开始说，说完停一下自动结束（Ctrl+Space）")
+        self.voice_btn.clicked.connect(self._on_voice)
+
         row.addWidget(self.input, 1)
+        row.addWidget(self.voice_btn)
         row.addWidget(self.send_btn)
         return row
 
@@ -471,6 +490,8 @@ class ChatWindow(QWidget):
         self._bridge.keys_ready.connect(self._on_keys_ready)
         self._bridge.limits_changed.connect(self._on_limits_changed)
         self._bridge.confirm_required.connect(self._on_confirm_required)
+
+        QShortcut(QKeySequence("Ctrl+Space"), self, activated=self._on_voice)
 
     # ---------- 交互 ----------
 
@@ -498,6 +519,60 @@ class ChatWindow(QWidget):
             return
         self.input.setText(text)
         self._send()
+
+    def _send_text(self, text: str) -> None:
+        """给语音用：把识别结果当作用户输入发出去。"""
+        self.input.setText(text)
+        self._send()
+
+    # ---------- 语音 ----------
+
+    @staticmethod
+    def _load_voice_settings(config_path: str | None) -> VoiceSettings:
+        try:
+            return load_config(config_path).voice
+        except Exception:
+            return VoiceSettings()
+
+    def _on_voice(self) -> None:
+        if self._busy:
+            self._set_status("这轮跑完再说…")
+            return
+        if self._voice_listening:
+            self._set_status("正在录音，说完停一下就会自动结束")
+            return
+        self._voice_listening = True
+        self.voice_btn.setText("在听…")
+        self._voice.listen()
+
+    def _on_voice_state(self, state: str) -> None:
+        if state == "listening":
+            self._set_status("在听… 说完停一下就行")
+            self._set_state("listening")
+        elif state == "transcribing":
+            self.voice_btn.setText("识别中")
+            self._set_status("识别中…")
+        else:
+            self._voice_listening = False
+            self.voice_btn.setText("语音")
+            if not self._busy:
+                self._set_state("idle")
+                self._set_status("")
+
+    def _on_voice_text(self, text: str) -> None:
+        hit, command = match_wake(text, self._voice_settings.wake_word)
+        spoken = (command if hit else text).strip()
+        self._enter_chat()
+        self.chat.add_note(f"🎙 {'（唤醒）' if hit else ''}{text}")
+        if not spoken:
+            self._set_status("只听到了唤醒词，没听清要做什么")
+            return
+        self._send_text(spoken)
+
+    def _on_voice_failed(self, message: str) -> None:
+        self._voice_listening = False
+        self.voice_btn.setText("语音")
+        self._set_status(message)
 
     # ---------- 档位 ----------
 
@@ -1011,6 +1086,10 @@ class ChatWindow(QWidget):
 
     def shutdown_agent(self) -> None:
         """退出前必须停线程，否则会报 QThread destroyed while running。"""
+        try:
+            self._voice.shutdown()
+        except Exception:
+            pass
         try:
             self.confirm_card.cancel()
             self._orb.cancel_confirm()

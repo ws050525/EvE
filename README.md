@@ -109,15 +109,37 @@ max_steps = 12
 work_root = "."              # work 档文件工具的根目录
 ```
 
+## 语音
+
+输入框右边有「语音」按钮（或 `Ctrl+Space`）：点一下开始说，说完停一下自动结束，
+识别结果直接当作用户输入发出去。
+
+- **识别**：sherpa-onnx 离线中文模型（paraformer），热态约 0.05–0.1 秒/句，只依赖 onnxruntime。
+- **断句**：能量门限 + 静音计时，不依赖任何音频库，所以纯逻辑可测。
+- **唤醒词**：说「伊芙，打开记事本」会被识别成一句话，开头是唤醒词就剥掉再执行。
+  目前是**按键 + 文本级唤醒词**；常听 KWS（不用按键说「伊芙」就唤醒）是下一步，
+  KWS 模型已经下好了（`models/voice/`）。
+- 音频不出本机，全程离线。
+
+模型放在 `models/voice/`（不进版本库），首次使用按下表下载解压：
+
+| 用途 | 模型 |
+| --- | --- |
+| 识别 | `sherpa-onnx-paraformer-zh-small-2024-03-09`（78 MB） |
+| 唤醒（待接） | `sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01`（33 MB） |
+
+`config.toml` 里 `[voice]` 段配置模型路径、唤醒词、静音时长。
+
 ## 测试
 
 ```powershell
-# 纯逻辑与集成测试，不需要模型、不联网（6 个文件 / 90 项）
+# 纯逻辑与集成测试，不需要模型、不联网（7 个文件 / 106 项）
 & 'D:\python\python.exe' tests\test_persona.py
 & 'D:\python\python.exe' tests\test_context.py      # 上下文裁剪与摘要
 & 'D:\python\python.exe' tests\test_workspace.py    # fs_* / shell_exec 的边界
 & 'D:\python\python.exe' tests\test_cost.py         # 计费与用量账本
 & 'D:\python\python.exe' tests\test_apps.py         # 开始菜单索引与启动
+& 'D:\python\python.exe' tests\test_voice.py        # 唤醒词与断句
 & 'D:\python\python.exe' tests\test_agent_loop.py   # 真配置 + 桩模型的主循环
 ```
 
@@ -141,7 +163,9 @@ work_root = "."              # work 档文件工具的根目录
 - [x] v0.5.8 开始菜单：`app_launch` 走 `Get-StartApps`（本机 335 条），支持中文名；新增 `app_list`
 - [x] v0.5.9 许可气泡：工具确认改为界面内卡片 / 悬浮球气泡；`app_launch(file=)` 直接开文件；`key_type(save=)`；修复长参数被 `max_tokens` 截断
 - [x] v0.5.10 模型面板：顶栏点模型名切模型（带单价）、`ctx` 胶囊调预算与步数、界面内配置 API Key；`work` 档默认改 DeepSeek Flash
-- [ ] v0.6 语音：两段式唤醒 + ASR + piper TTS
+- [x] v0.6.0 语音输入：麦克风采集 + 静音断句 + sherpa-onnx 离线识别 + 文本级唤醒词「伊芙」（语音按钮 / Ctrl+Space）
+- [ ] v0.6.1 常听唤醒：KWS 两段式（「伊芙」唤醒后 5 秒内说指令，模型已就位）
+- [ ] v0.6.2 语音播报：TTS + 播报时暂停收音防自激
 - [ ] v0.7 打包：PyInstaller spec + 首次运行向导
 
 ## 实测数据
