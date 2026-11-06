@@ -64,10 +64,15 @@ def clean_for_speech(text: str) -> str:
 
 @dataclass
 class TtsSettings:
-    model: str = "models/voice/vits-zh-aishell3"
+    model: str = "models/voice/vits-zh-hf-eula"
     speed: float = 1.0
     speaker: int = 0
     enabled: bool = True
+    volume: float = 1.0
+    # VITS 的三个表现力参数：
+    # noise_scale 越大语气起伏越明显（太高会沙哑），noise_scale_w 越大停顿长短越随机
+    noise_scale: float = 0.667
+    noise_scale_w: float = 0.8
 
 
 class PiperTts:
@@ -79,12 +84,22 @@ class PiperTts:
     """
 
     def __init__(
-        self, model_dir: str | Path, speed: float = 1.0, speaker: int = 0, threads: int = 2
+        self,
+        model_dir: str | Path,
+        speed: float = 1.0,
+        speaker: int = 0,
+        threads: int = 2,
+        volume: float = 1.0,
+        noise_scale: float = 0.667,
+        noise_scale_w: float = 0.8,
     ):
         self.model_dir = Path(model_dir)
         self.speed = max(0.5, min(2.0, float(speed)))
         self.speaker = max(0, int(speaker))
         self.threads = threads
+        self.volume = max(0.0, min(1.5, float(volume)))
+        self.noise_scale = max(0.0, min(1.5, float(noise_scale)))
+        self.noise_scale_w = max(0.0, min(1.5, float(noise_scale_w)))
         self.error = ""
         self._tts = None
 
@@ -95,6 +110,16 @@ class PiperTts:
             return False
         if not (self.model_dir / "tokens.txt").exists():
             self.error = f"{self.model_dir} 里缺 tokens.txt"
+            return False
+        # 只有 VITS 能这么加载。指到 ASR / KWS 模型上会直接在 C++ 层退出进程，
+        # 连异常都抓不到，所以先按文件特征挡一下。
+        looks_vits = (
+            (self.model_dir / "lexicon.txt").exists()
+            or (self.model_dir / "espeak-ng-data").is_dir()
+            or self.model_dir.name.startswith("vits")
+        )
+        if not looks_vits:
+            self.error = f"{self.model_dir.name} 看起来不是语音合成（VITS）模型"
             return False
         try:
             import sherpa_onnx  # noqa: F401
@@ -137,6 +162,8 @@ class PiperTts:
                         tokens=str(root / "tokens.txt"),
                         data_dir=str(data_dir) if data_dir.is_dir() else "",
                         dict_dir=str(dict_dir) if dict_dir.is_dir() else "",
+                        noise_scale=self.noise_scale,
+                        noise_scale_w=self.noise_scale_w,
                     ),
                     num_threads=self.threads,
                 ),
@@ -158,6 +185,8 @@ class PiperTts:
         samples = np.asarray(audio.samples, dtype="float32")
         if samples.size == 0:
             return None, 0
+        if self.volume != 1.0:
+            samples = np.clip(samples * self.volume, -1.0, 1.0)
         return samples, int(audio.sample_rate)
 
     def speak(self, text: str) -> bool:

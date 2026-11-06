@@ -148,10 +148,13 @@ class VoiceSettings:
     max_seconds: float = 20.0
     kws_enabled: bool = True  # 常听唤醒：不用按键，说「伊芙」就进录音
     # 播报
-    tts_model: str = "models/voice/vits-zh-aishell3"
+    tts_model: str = "models/voice/vits-zh-hf-eula"
     tts_speed: float = 1.0
     tts_speaker: int = 0
     tts_enabled: bool = True
+    tts_volume: float = 1.0
+    tts_noise_scale: float = 0.667  # 语气起伏，越大越"有感情"，太高会沙哑
+    tts_noise_scale_w: float = 0.8  # 停顿长短的随机性
 
     def wake_tokens(self) -> tuple[str, str]:
         """唤醒词的拼音 token（KWS 模型按声母+韵母建模）。"""

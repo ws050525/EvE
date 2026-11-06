@@ -141,6 +141,38 @@ ASR 会把「伊芙」听成「衣服」，所以唤醒词变体里收了它。
 | 唤醒 | `sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01`（33 MB） |
 | 播报 | `vits-zh-hf-eula`（115 MB，22.05 kHz 单人女声） |
 
+### 微调播报
+
+参数都在 `config.toml` 的 `[voice]` 里，改完重启界面即可：
+
+| 参数 | 作用 | 参考范围 |
+| --- | --- | --- |
+| `tts_speed` | 语速 | 0.5–2.0，1.0 正常 |
+| `tts_volume` | 音量 | 0–1.5 |
+| `tts_noise_scale` | 语气起伏 | 0.5–0.9；调大更有感情，超过 0.9 容易沙哑 |
+| `tts_noise_scale_w` | 停顿随机性 | 0.6–1.0；太小像念稿，太大节奏乱 |
+| `tts_speaker` | 音色编号 | 多人模型才有意义 |
+| `tts_model` | 换音色 | 指向 `models/voice/` 下的 `vits-*` 目录 |
+
+不想开界面试参数，用试听工具直接听：
+
+```powershell
+# 用配置里的参数念一句
+& 'D:\python\python.exe' eve_tts.py
+
+# 临时改参数试
+& 'D:\python\python.exe' eve_tts.py "你好，我是伊芙" --speed 1.15 --noise 0.8
+
+# 存成 wav 反复对比
+& 'D:\python\python.exe' eve_tts.py "你好" --save sample.wav --no-play
+
+# 看看有哪些音色
+& 'D:\python\python.exe' eve_tts.py --list
+```
+
+念之前的文本清洗在 `eve_core/tts.py: clean_for_speech()`：
+`MAX_SPEECH_CHARS = 220` 控播报长度，几个正则是去 markdown / 代码块 / 颜文字 / 列表符号。
+
 `config.toml` 里 `[voice]` 段配置模型路径、唤醒词、静音时长。
 
 ## 测试

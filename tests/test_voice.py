@@ -288,6 +288,51 @@ def speech_cleaning_drops_list_bullets():
     assert "打开了记事本" in cleaned and "保存了文件" in cleaned, cleaned
 
 
+# ---------- 播报参数 ----------
+
+
+@case
+def tts_parameters_clamp_to_sane_ranges():
+    from eve_core.tts import PiperTts
+
+    tts = PiperTts("D:/nope", speed=9.0, volume=9.0, noise_scale=9.0, noise_scale_w=-3.0)
+    assert tts.speed == 2.0, tts.speed
+    assert tts.volume == 1.5, tts.volume
+    assert tts.noise_scale == 1.5, tts.noise_scale
+    assert tts.noise_scale_w == 0.0, tts.noise_scale_w
+
+
+@case
+def tts_rejects_non_vits_directory():
+    """指到 ASR / KWS 模型目录时要挡住——那种模型会在 C++ 层直接退出进程。"""
+    import tempfile
+    from pathlib import Path
+
+    from eve_core.tts import PiperTts
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp) / "sherpa-onnx-kws-fake"
+        root.mkdir()
+        (root / "tokens.txt").write_text("a 0\n", encoding="utf-8")
+        (root / "encoder.onnx").write_bytes(b"x")
+        tts = PiperTts(root)
+        assert not tts.available
+        assert "不是语音合成" in tts.error, tts.error
+
+
+@case
+def tts_settings_come_from_config():
+    from eve_core.config import load_config
+
+    cfg = load_config()
+    voice = cfg.voice
+    assert 0.5 <= voice.tts_speed <= 2.0, voice.tts_speed
+    assert 0.0 <= voice.tts_volume <= 1.5, voice.tts_volume
+    assert 0.0 <= voice.tts_noise_scale <= 1.5, voice.tts_noise_scale
+    assert 0.0 <= voice.tts_noise_scale_w <= 1.5, voice.tts_noise_scale_w
+    assert voice.tts_model.endswith("eula"), voice.tts_model
+
+
 def main() -> int:
     failed = 0
     for fn in CHECKS:

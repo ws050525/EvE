@@ -235,6 +235,13 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
         tts_speed=float(voice_raw.get("tts_speed", VoiceSettings.tts_speed)),
         tts_speaker=int(voice_raw.get("tts_speaker", VoiceSettings.tts_speaker)),
         tts_enabled=bool(voice_raw.get("tts_enabled", VoiceSettings.tts_enabled)),
+        tts_volume=float(voice_raw.get("tts_volume", VoiceSettings.tts_volume)),
+        tts_noise_scale=float(
+            voice_raw.get("tts_noise_scale", VoiceSettings.tts_noise_scale)
+        ),
+        tts_noise_scale_w=float(
+            voice_raw.get("tts_noise_scale_w", VoiceSettings.tts_noise_scale_w)
+        ),
     )
 
     return AppConfig(

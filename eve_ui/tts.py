@@ -31,6 +31,9 @@ class TtsWorker(QObject):
             self._settings.model,
             speed=self._settings.speed,
             speaker=self._settings.speaker,
+            volume=self._settings.volume,
+            noise_scale=self._settings.noise_scale,
+            noise_scale_w=self._settings.noise_scale_w,
         )
         if piper.available:
             self._backend = piper
