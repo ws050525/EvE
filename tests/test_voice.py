@@ -234,6 +234,60 @@ def settings_defaults_are_sane():
     assert settings.max_seconds > 0
 
 
+# ---------- 播报前的文本清洗 ----------
+
+
+@case
+def speech_cleaning_strips_markdown_and_kaomoji():
+    from eve_core.tts import clean_for_speech
+
+    messy = "好的**(・ω・)**\n\n- 第一步：`app_launch`\n- 看 [文档](https://example.com)"
+    cleaned = clean_for_speech(messy)
+    assert "*" not in cleaned and "`" not in cleaned, cleaned
+    assert "・ω・" not in cleaned, cleaned
+    assert "文档" in cleaned, cleaned
+    assert "https://" not in cleaned, cleaned
+
+
+@case
+def speech_cleaning_drops_code_blocks():
+    from eve_core.tts import clean_for_speech
+
+    text = "先看这段代码\n```python\nprint(1)\n```\n然后跑一下"
+    cleaned = clean_for_speech(text)
+    assert "print" not in cleaned, cleaned
+    assert "代码" in cleaned and "跑一下" in cleaned, cleaned
+
+
+@case
+def speech_cleaning_truncates_long_replies():
+    from eve_core.tts import MAX_SPEECH_CHARS, clean_for_speech
+
+    long_text = "这是一个很长的回复。" * 60
+    cleaned = clean_for_speech(long_text)
+    assert len(cleaned) <= MAX_SPEECH_CHARS + 1, len(cleaned)
+    assert cleaned.endswith("。"), cleaned[-10:]
+
+
+@case
+def speech_cleaning_handles_empty():
+    from eve_core.tts import clean_for_speech
+
+    assert clean_for_speech("") == ""
+    assert clean_for_speech("   ") == ""
+    assert clean_for_speech(None) == ""
+
+
+@case
+def speech_cleaning_drops_list_bullets():
+    from eve_core.tts import clean_for_speech
+
+    text = "已经搞定了\n- 打开了记事本\n- 输入了文字\n1. 保存了文件"
+    cleaned = clean_for_speech(text)
+    assert "- " not in cleaned and "1. " not in cleaned, cleaned
+    assert "打开了记事本" in cleaned and "保存了文件" in cleaned, cleaned
+
+
 def main() -> int:
     failed = 0
     for fn in CHECKS:

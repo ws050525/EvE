@@ -41,9 +41,11 @@ from .bridge import AgentBridge
 from .chat_view import ChatView
 from .mobius import MobiusWidget
 from .orb import OrbWindow
+from .tts import TtsBridge
 from .voice import VoiceBridge, WakeBridge
 from eve_core.config import load_config
 from eve_core.pricing import format_money
+from eve_core.tts import TtsSettings
 from eve_core.voice import VoiceSettings, match_wake, mode_aliases, parse_mode_command
 
 GREETING = "今天想做点什么？"
@@ -296,6 +298,20 @@ class ChatWindow(QWidget):
             self._wake = WakeBridge(self._voice_settings, self)
             self._wake.woke.connect(self._on_wake)
             self._wake.failed.connect(lambda msg: self._set_status(msg))
+
+        self._tts_enabled = bool(self._voice_settings.tts_enabled)
+        self._tts = TtsBridge(
+            TtsSettings(
+                model=self._voice_settings.tts_model,
+                speed=self._voice_settings.tts_speed,
+                speaker=self._voice_settings.tts_speaker,
+                enabled=self._tts_enabled,
+            ),
+            self,
+        )
+        self._tts.started.connect(lambda: self._set_status("播报中…"))
+        self._tts.finished.connect(self._on_tts_finished)
+        self._tts.failed.connect(lambda msg: self._set_status(msg))
         self._wire()
         # 指定了 EVE_MODEL 时跳过本地预加载，避免白起一次本地引擎
         if not os.environ.get("EVE_MODEL"):
@@ -723,9 +739,15 @@ class ChatWindow(QWidget):
         menu.addAction("设置 API Key…").triggered.connect(
             lambda: self._open_key_dialog("")
         )
+        speech = menu.addAction("语音播报：开" if self._tts_enabled else "语音播报：关")
+        speech.triggered.connect(self._toggle_tts)
         menu.addAction("切换档位…").triggered.connect(self._open_mode_menu)
         menu.addAction("查看本次花费").triggered.connect(self._show_cost)
         return menu
+
+    def _toggle_tts(self) -> None:
+        self._tts_enabled = not self._tts_enabled
+        self._set_status("语音播报已打开" if self._tts_enabled else "语音播报已关闭")
 
     def _open_key_dialog(self, preselect: str = "") -> None:
         if self._busy:
@@ -1076,6 +1098,16 @@ class ChatWindow(QWidget):
         self._set_busy(False)
         self._resume_wake()
 
+        # 念出来。播报期间暂停唤醒，免得把自己说的「伊芙」当成唤醒词
+        if self._tts_enabled and text.strip():
+            self._pause_wake()
+            self._tts.speak(text)
+
+    def _on_tts_finished(self, ok: bool) -> None:
+        self._resume_wake()
+        if not self._busy:
+            self._set_status(self._metrics_text())
+
     def _on_failed(self, message: str) -> None:
         self._streaming = False
         self._set_state("error")
@@ -1175,6 +1207,10 @@ class ChatWindow(QWidget):
         try:
             if self._wake is not None:
                 self._wake.shutdown()
+        except Exception:
+            pass
+        try:
+            self._tts.shutdown()
         except Exception:
             pass
         try:

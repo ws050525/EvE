@@ -231,6 +231,10 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
         silence_ms=int(voice_raw.get("silence_ms", VoiceSettings.silence_ms)),
         max_seconds=float(voice_raw.get("max_seconds", VoiceSettings.max_seconds)),
         kws_enabled=bool(voice_raw.get("kws_enabled", VoiceSettings.kws_enabled)),
+        tts_model=str(resolve(voice_raw.get("tts_model", VoiceSettings.tts_model))),
+        tts_speed=float(voice_raw.get("tts_speed", VoiceSettings.tts_speed)),
+        tts_speaker=int(voice_raw.get("tts_speaker", VoiceSettings.tts_speaker)),
+        tts_enabled=bool(voice_raw.get("tts_enabled", VoiceSettings.tts_enabled)),
     )
 
     return AppConfig(

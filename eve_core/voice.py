@@ -147,6 +147,11 @@ class VoiceSettings:
     silence_ms: int = 900
     max_seconds: float = 20.0
     kws_enabled: bool = True  # 常听唤醒：不用按键，说「伊芙」就进录音
+    # 播报
+    tts_model: str = "models/voice/vits-zh-aishell3"
+    tts_speed: float = 1.0
+    tts_speaker: int = 0
+    tts_enabled: bool = True
 
     def wake_tokens(self) -> tuple[str, str]:
         """唤醒词的拼音 token（KWS 模型按声母+韵母建模）。"""
