@@ -13,7 +13,7 @@
 | --- | --- | --- |
 | `chat` | 本地 GGUF | 闲聊、陪伴 |
 | `desktop` | 本地 GGUF + 视觉 | 开软件、搜索、点击 |
-| `work` | 云端 API | 整理文档、写代码、爬数据 |
+| `work` | DeepSeek Flash（云端） | 整理文档、写代码、爬数据 |
 
 ## 目录结构
 
@@ -71,6 +71,9 @@ logs/         会话日志与引擎日志（不入版本库）
 | `/status` | 运行时状态：引擎、端口、pid、加载耗时、日志路径 |
 | `/persona` | 人格状态：抗议等级、连续命令数、颜文字节流 |
 | `/stop` | 停止本地引擎，释放显存 |
+| `/cost` | 本次会话的 token 用量与估算花费（按模型拆账） |
+| `/context [n\|auto]` | 查看或设置上下文预算 |
+| `/steps [n]` | 查看或设置单条消息的步数上限 |
 | `/key <id>` | 为云端模型保存 API Key（DPAPI 加密，不落明文） |
 | `/reset` `/tools` `/where` `/help` `/exit` | 常规 |
 
@@ -87,24 +90,36 @@ mmproj = "models/....gguf"   # 视觉投影，可省
 ctx = 8192
 ngl = 99
 
-[models.deepseek]
+[models.deepseek-flash]
 kind = "cloud_api"           # 云端 API
 base_url = "https://api.deepseek.com/v1"
-model = "deepseek-chat"
-api_key_env = "EVE_CLOUD_API_KEY"
+model = "deepseek-flash"
+api_key_ref = "deepseek"     # Key 存 KeyStore 的这个 id 下，/key deepseek 或界面里配
+ctx = 131072
+price_in = 2.0               # 元 / 百万 tokens（未命中缓存）
+price_out = 8.0
+price_cached_in = 0.2        # 命中缓存
 
 [modes.chat]
 model = "qwen3vl-4b"         # 档位只绑模型 id，不绑类型
+
+[app]
+context_tokens = 0           # 0 = 按窗口自动
+max_steps = 12
+work_root = "."              # work 档文件工具的根目录
 ```
 
 ## 测试
 
 ```powershell
-# 纯逻辑测试，不需要模型、不联网
+# 纯逻辑与集成测试，不需要模型、不联网（6 个文件 / 90 项）
 & 'D:\python\python.exe' tests\test_persona.py
+& 'D:\python\python.exe' tests\test_context.py      # 上下文裁剪与摘要
+& 'D:\python\python.exe' tests\test_workspace.py    # fs_* / shell_exec 的边界
+& 'D:\python\python.exe' tests\test_cost.py         # 计费与用量账本
+& 'D:\python\python.exe' tests\test_apps.py         # 开始菜单索引与启动
+& 'D:\python\python.exe' tests\test_agent_loop.py   # 真配置 + 桩模型的主循环
 ```
-
-覆盖：命令识别、抗议分级、道歉复位、颜文字节流与禁用场合。
 
 ## 状态
 
@@ -123,7 +138,9 @@ model = "qwen3vl-4b"         # 档位只绑模型 id，不绑类型
 - [x] v0.5.5 悬浮球：玻璃球 + 光点眼 + 气泡汇报；agent 模式自动收起主窗
 - [x] v0.5.6 联网工具：web_search（Bing RSS）与 http_get（正文抽取）
 - [x] v0.5.7 云端接入：DeepSeek Flash/Pro + 官方 Search/Fetch 作为联网后端
-- [ ] v0.5.8 模型面板：选 GGUF / 切云端 / 存 key
+- [x] v0.5.8 开始菜单：`app_launch` 走 `Get-StartApps`（本机 335 条），支持中文名；新增 `app_list`
+- [x] v0.5.9 许可气泡：工具确认改为界面内卡片 / 悬浮球气泡；`app_launch(file=)` 直接开文件；`key_type(save=)`；修复长参数被 `max_tokens` 截断
+- [x] v0.5.10 模型面板：顶栏点模型名切模型（带单价）、`ctx` 胶囊调预算与步数、界面内配置 API Key；`work` 档默认改 DeepSeek Flash
 - [ ] v0.6 语音：两段式唤醒 + ASR + piper TTS
 - [ ] v0.7 打包：PyInstaller spec + 首次运行向导
 
@@ -147,3 +164,12 @@ model = "qwen3vl-4b"         # 档位只绑模型 id，不绑类型
 | 引擎加载 | 3.4–3.8 秒 |
 | `/use` 热切换 | 换端口、换 pid、各 3.4 秒，退出无残留 |
 | `/scan` | 0.2 秒（不加载模型） |
+| 云端 flash 单轮 | 约 1.3 秒 |
+| 上下文压缩（本地 4B） | 10194 → 471 tokens，摘要 46 字，关键事实保住 |
+
+### agent 端到端
+
+| 场景 | 结果 |
+| --- | --- |
+| 「写贪吃蛇并保存」（本地 4B，desktop 档） | 4 步，自己选了记事本，最终 74 行 pygame 代码 |
+| 「写贪吃蛇并保存」（DeepSeek Flash） | 8 步，**自己选了 VS Code**，118 行 tkinter 代码，41312 tokens / ¥0.045 |

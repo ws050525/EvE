@@ -94,7 +94,7 @@ max_tokens = 2048            # 写到编辑器里的内容可能很长；512 会
 temperature = 0.2
 
 [modes.work]
-model = "deepseek-pro"
+model = "deepseek-flash"     # 默认 flash：够用且便宜；要更强就在模型菜单里临时换 pro
 system_prompt = "prompts/work.md"
 tools = ["web_search", "http_get", "fs_read", "fs_write", "fs_list", "shell_exec"]
 require_confirm = true

@@ -157,12 +157,17 @@ def streaming_tier_records_usage():
 
 @case
 def cloud_cost_matches_config_price():
-    agent = _agent("work")  # deepseek-pro：入 9 / 出 27 元每百万
+    agent = _agent("work")
+    assert agent.model_id == "deepseek-flash", agent.model_id  # work 档默认用 flash
+
     agent.send("帮我看看这个文件")
 
     totals = agent.usage.totals()
     assert totals.calls == 1, totals
-    expected = (1000 * 9.0 + 100 * 27.0) / 1_000_000
+
+    price = agent.price
+    assert not price.free, "云端模型必须配了单价，否则算出来的花费是 0"
+    expected = (1000 * price.input + 100 * price.output) / 1_000_000
     assert abs(totals.cost - expected) < 1e-9, (totals.cost, expected)
 
 

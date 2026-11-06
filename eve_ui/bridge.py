@@ -24,23 +24,52 @@ from eve_core.events import EventBus
 from eve_core.pricing import price_for
 
 
-def model_rows(cfg, active_model_id: str) -> list[dict]:
-    """给界面用的模型清单：本地排前面，带单价，标出当前那个。"""
+def model_rows(cfg, active_model_id: str, keys=None) -> list[dict]:
+    """给界面用的模型清单：本地排前面，带单价，标出当前那个和有没有 Key。"""
     rows: list[dict] = []
     for model_id, model in cfg.models.items():
         price = price_for(model)
+        kind = model.detect_kind()
+        key_ref = model.api_key_ref or model.id
+        has_key = None
+        if kind == "cloud_api" and keys is not None:
+            has_key = bool(keys.get(key_ref))
         rows.append(
             {
                 "id": model_id,
                 "label": model.label,
-                "kind": model.detect_kind(),
+                "kind": kind,
                 "price_in": price.input,
                 "price_out": price.output,
                 "free": price.free,
                 "active": model_id == active_model_id,
+                "key_ref": key_ref,
+                "has_key": has_key,
             }
         )
     rows.sort(key=lambda row: (row["kind"] != "local_gguf", row["id"]))
+    return rows
+
+
+def key_rows(cfg, keys=None) -> list[dict]:
+    """按 key id 归并（flash / pro 共用 deepseek 这把），给设置对话框用。"""
+    grouped: dict[str, list[str]] = {}
+    for model in cfg.models.values():
+        if model.detect_kind() != "cloud_api":
+            continue
+        ref = model.api_key_ref or model.id
+        grouped.setdefault(ref, []).append(model.label)
+
+    rows = []
+    for ref, labels in grouped.items():
+        rows.append(
+            {
+                "id": ref,
+                "label": f"{ref} · {' / '.join(labels)}",
+                "has_key": bool(keys.get(ref)) if keys is not None else None,
+            }
+        )
+    rows.sort(key=lambda row: row["id"])
     return rows
 
 
@@ -53,6 +82,7 @@ class AgentWorker(QObject):
     mode_changed = Signal(str, str)        # mode, model_id
     modes_ready = Signal(list)
     models_ready = Signal(list)            # [{id,label,kind,price_in,price_out,active}]
+    keys_ready = Signal(list)              # [{id,label,has_key}]
     limits_changed = Signal(int, int, int)  # 预算设定（0=自动）、生效预算、步数上限
     finished = Signal()
 
@@ -71,11 +101,21 @@ class AgentWorker(QObject):
             bus.subscribe(self._on_event)
             self._agent = Agent(cfg, cfg.default_mode, bus=bus)
             self.modes_ready.emit(sorted(cfg.modes))
-            self.models_ready.emit(model_rows(cfg, self._agent.model_id))
+            self._emit_keys()
             self._emit_limits()
             self.ready.emit(self._agent.model_id, cfg.model(self._agent.model_id).label)
         except Exception as exc:  # 配置错误也要让界面显示出来
             self.failed.emit(str(exc))
+
+    def _emit_keys(self) -> None:
+        if self._agent is None:
+            return
+        self.keys_ready.emit(key_rows(self._agent.cfg, self._agent.runtime.keys))
+        self.models_ready.emit(
+            model_rows(
+                self._agent.cfg, self._agent.model_id, self._agent.runtime.keys
+            )
+        )
 
     def _emit_limits(self) -> None:
         if self._agent is not None:
@@ -137,7 +177,7 @@ class AgentWorker(QObject):
         try:
             self._agent.switch_mode(mode_name)
             self.mode_changed.emit(self._agent.mode_name, self._agent.model_id)
-            self.models_ready.emit(model_rows(self._agent.cfg, self._agent.model_id))
+            self._emit_keys()
             self._emit_limits()
             self.ready.emit(
                 self._agent.model_id, self._agent.cfg.model(self._agent.model_id).label
@@ -152,7 +192,7 @@ class AgentWorker(QObject):
             return
         try:
             self._agent.switch_model(model_id)
-            self.models_ready.emit(model_rows(self._agent.cfg, self._agent.model_id))
+            self._emit_keys()
             self._emit_limits()
             self.ready.emit(
                 self._agent.model_id, self._agent.cfg.model(self._agent.model_id).label
@@ -182,6 +222,37 @@ class AgentWorker(QObject):
         except Exception as exc:
             self.failed.emit(str(exc))
 
+    @Slot(str, str)
+    def set_key(self, key_id: str, secret: str) -> None:
+        """存 API Key：DPAPI 加密后落到 .data/keys.json，明文只在内存里过一下。"""
+        if self._agent is None:
+            return
+        try:
+            self._agent.runtime.keys.set(key_id, secret)
+            # 之前因为没 key 而失败过的 provider 要重建，否则改了也不生效
+            self._agent.forget_provider()
+            self._emit_keys()
+            self.event.emit(
+                "settings", {"message": f"{key_id} 的 API Key 已加密保存"}
+            )
+        except Exception as exc:
+            self.failed.emit(f"保存 Key 失败：{exc}")
+
+    @Slot(str)
+    def delete_key(self, key_id: str) -> None:
+        if self._agent is None:
+            return
+        try:
+            removed = self._agent.runtime.keys.delete(key_id)
+            self._agent.forget_provider()
+            self._emit_keys()
+            self.event.emit(
+                "settings",
+                {"message": f"已删除 {key_id} 的 Key" if removed else f"{key_id} 本来就没有 Key"},
+            )
+        except Exception as exc:
+            self.failed.emit(f"删除 Key 失败：{exc}")
+
     @Slot()
     def shutdown(self) -> None:
         if self._agent is not None:
@@ -204,6 +275,7 @@ class AgentBridge(QObject):
     mode_changed = Signal(str, str)
     modes_ready = Signal(list)
     models_ready = Signal(list)
+    keys_ready = Signal(list)
     limits_changed = Signal(int, int, int)
 
     ask_requested = Signal(str)
@@ -211,6 +283,8 @@ class AgentBridge(QObject):
     model_requested = Signal(str)
     context_requested = Signal(int)
     steps_requested = Signal(int)
+    key_set_requested = Signal(str, str)
+    key_delete_requested = Signal(str)
     preload_requested = Signal()
     shutdown_requested = Signal()
 
@@ -226,6 +300,8 @@ class AgentBridge(QObject):
         self.model_requested.connect(self._worker.set_model)
         self.context_requested.connect(self._worker.set_context_limit)
         self.steps_requested.connect(self._worker.set_max_steps)
+        self.key_set_requested.connect(self._worker.set_key)
+        self.key_delete_requested.connect(self._worker.delete_key)
         self.preload_requested.connect(self._worker.preload)
         self.shutdown_requested.connect(self._worker.shutdown)
 
@@ -237,6 +313,7 @@ class AgentBridge(QObject):
         self._worker.mode_changed.connect(self.mode_changed)
         self._worker.modes_ready.connect(self.modes_ready)
         self._worker.models_ready.connect(self.models_ready)
+        self._worker.keys_ready.connect(self.keys_ready)
         self._worker.limits_changed.connect(self.limits_changed)
 
         if autostart:
@@ -265,6 +342,12 @@ class AgentBridge(QObject):
 
     def set_max_steps(self, steps: int) -> None:
         self.steps_requested.emit(int(steps))
+
+    def set_key(self, key_id: str, secret: str) -> None:
+        self.key_set_requested.emit(key_id, secret)
+
+    def delete_key(self, key_id: str) -> None:
+        self.key_delete_requested.emit(key_id)
 
     def answer_confirm(self, allowed: bool) -> None:
         # 直接调用，不经信号——worker 正阻塞着等这个结果

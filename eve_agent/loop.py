@@ -131,6 +131,11 @@ class Agent:
     def reset(self) -> None:
         self._activate(self.mode_name, reset=True)
 
+    def forget_provider(self) -> None:
+        """丢掉缓存的 provider，下次请求重新解析（改 Key 之后要调它）。"""
+        self._provider = None
+        self._provider_model_id = ""
+
     # ---------- 事件 ----------
 
     def _emit_runtime(self, kind: str, data: dict[str, Any]) -> None:

@@ -22,6 +22,8 @@ from PySide6.QtCore import (
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
     QApplication,
+    QComboBox,
+    QDialog,
     QFrame,
     QGraphicsOpacityEffect,
     QHBoxLayout,
@@ -141,6 +143,107 @@ class ConfirmCard(QFrame):
             self.decided.emit(False)
 
 
+class KeyDialog(QDialog):
+    """给云端模型配 Key。
+
+    Key 从来只走内存 → DPAPI 加密落盘，界面不回显、不写进 config.toml。
+    """
+
+    def __init__(self, rows: list[dict], parent: QWidget | None = None, preselect: str = ""):
+        super().__init__(parent)
+        self.setWindowTitle("设置 API Key")
+        self.setStyleSheet(theme.DIALOG_QSS)
+        self.setMinimumWidth(420)
+        self.action = ""  # save | delete
+        self._rows = list(rows)
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 16)
+        layout.setSpacing(10)
+
+        title = QLabel("给云端模型配一把 API Key", self)
+        title.setStyleSheet(
+            f"color: {theme.TEXT0}; font-family: {theme.FONT_STACK}; font-size: 13px;"
+        )
+        layout.addWidget(title)
+
+        self.combo = QComboBox(self)
+        for row in self._rows:
+            mark = "　✓ 已配置" if row.get("has_key") else "　（未配置）"
+            self.combo.addItem(f"{row['label']}{mark}", row["id"])
+        if preselect:
+            index = self.combo.findData(preselect)
+            if index >= 0:
+                self.combo.setCurrentIndex(index)
+        layout.addWidget(self.combo)
+
+        self.edit = QLineEdit(self)
+        self.edit.setEchoMode(QLineEdit.Password)
+        self.edit.setPlaceholderText("粘贴 API Key（不会回显）")
+        self.edit.setStyleSheet(theme.INPUT_QSS)
+        self.edit.returnPressed.connect(self._on_save)
+        layout.addWidget(self.edit)
+
+        hint = QLabel(
+            "用 Windows DPAPI 加密后存到 .data/keys.json，只有当前 Windows 用户能解开。"
+            "改完立刻生效，不用重启。",
+            self,
+        )
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        self.error = QLabel("", self)
+        self.error.setStyleSheet(
+            f"color: {theme.DANGER}; font-family: {theme.FONT_STACK}; font-size: 11px;"
+        )
+        layout.addWidget(self.error)
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(6)
+        self.delete_btn = QPushButton("清除已保存的 Key", self)
+        self.delete_btn.setCursor(Qt.PointingHandCursor)
+        self.delete_btn.setStyleSheet(theme.DENY_BUTTON_QSS)
+        self.delete_btn.clicked.connect(self._on_delete)
+        buttons.addWidget(self.delete_btn)
+        buttons.addStretch(1)
+
+        cancel = QPushButton("取消", self)
+        cancel.setCursor(Qt.PointingHandCursor)
+        cancel.setStyleSheet(theme.DENY_BUTTON_QSS)
+        cancel.clicked.connect(self.reject)
+        buttons.addWidget(cancel)
+
+        save = QPushButton("保存", self)
+        save.setCursor(Qt.PointingHandCursor)
+        save.setStyleSheet(theme.ALLOW_BUTTON_QSS)
+        save.clicked.connect(self._on_save)
+        buttons.addWidget(save)
+        layout.addLayout(buttons)
+
+        self.edit.setFocus()
+
+    def key_id(self) -> str:
+        return str(self.combo.currentData() or "")
+
+    def secret(self) -> str:
+        return self.edit.text().strip()
+
+    def _on_save(self) -> None:
+        if not self.secret():
+            self.error.setText("Key 不能为空")
+            return
+        self.action = "save"
+        self.accept()
+
+    def _on_delete(self) -> None:
+        row = next((r for r in self._rows if r["id"] == self.key_id()), None)
+        if row is not None and not row.get("has_key"):
+            self.error.setText("这个 id 本来就没有保存过 Key")
+            return
+        self.action = "delete"
+        self.accept()
+
+
 class ChatWindow(QWidget):
     def __init__(self, config_path: str | None = None):
         super().__init__()
@@ -155,6 +258,7 @@ class ChatWindow(QWidget):
         self._streaming = False
         self._modes: list[str] = []
         self._models: list[dict] = []
+        self._key_rows: list[dict] = []
         self._mode = "chat"
         self._switching = False
         self._tool_row = None
@@ -364,6 +468,7 @@ class ChatWindow(QWidget):
         self._bridge.mode_changed.connect(self._on_mode_changed)
         self._bridge.modes_ready.connect(self._on_modes_ready)
         self._bridge.models_ready.connect(self._on_models_ready)
+        self._bridge.keys_ready.connect(self._on_keys_ready)
         self._bridge.limits_changed.connect(self._on_limits_changed)
         self._bridge.confirm_required.connect(self._on_confirm_required)
 
@@ -429,6 +534,9 @@ class ChatWindow(QWidget):
     def _on_models_ready(self, rows: list) -> None:
         self._models = list(rows)
 
+    def _on_keys_ready(self, rows: list) -> None:
+        self._key_rows = list(rows)
+
     def _open_model_menu(self) -> None:
         if self._busy:
             self._set_status("这轮跑完再换模型…")
@@ -451,21 +559,58 @@ class ChatWindow(QWidget):
                 if label != group and group:
                     menu.addSeparator()
                 group = label
+
                 if row["free"]:
                     suffix = "不计费（本机）"
                 else:
                     suffix = f"¥{row['price_in']:g} / ¥{row['price_out']:g} 每百万"
-                action = menu.addAction(f"{row['id']}   {label} · {suffix}")
+
+                if row.get("has_key") is False:
+                    text = f"{row['id']}   {label} · {suffix} · 未配置 Key"
+                else:
+                    text = f"{row['id']}   {label} · {suffix}"
+
+                action = menu.addAction(text)
                 action.setCheckable(True)
                 action.setChecked(bool(row["active"]))
-                action.triggered.connect(
-                    lambda _=False, mid=row["id"]: self._switch_model(mid)
-                )
+                if row.get("has_key") is False:
+                    # 没 Key 就切过去也没用，直接引导去配
+                    action.triggered.connect(
+                        lambda _=False, ref=row["key_ref"]: self._open_key_dialog(ref)
+                    )
+                else:
+                    action.triggered.connect(
+                        lambda _=False, mid=row["id"]: self._switch_model(mid)
+                    )
 
         menu.addSeparator()
+        menu.addAction("设置 API Key…").triggered.connect(
+            lambda: self._open_key_dialog("")
+        )
         menu.addAction("切换档位…").triggered.connect(self._open_mode_menu)
         menu.addAction("查看本次花费").triggered.connect(self._show_cost)
         return menu
+
+    def _open_key_dialog(self, preselect: str = "") -> None:
+        if self._busy:
+            self._set_status("这轮跑完再改 Key…")
+            return
+        if not self._key_rows:
+            self._set_status("还没有需要 Key 的云端模型")
+            return
+
+        dialog = KeyDialog(self._key_rows, self, preselect)
+        if dialog.exec() != QDialog.Accepted:
+            return
+
+        key_id = dialog.key_id()
+        if dialog.action == "delete":
+            self._bridge.delete_key(key_id)
+            return
+        secret = dialog.secret()
+        if secret:
+            self._set_status(f"正在保存 {key_id} 的 Key…")
+            self._bridge.set_key(key_id, secret)
 
     def _switch_model(self, model_id: str) -> None:
         if self._busy:

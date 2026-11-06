@@ -154,6 +154,31 @@ QFrame#ConfirmCard {{
 }}
 """
 
+# API Key 设置对话框
+DIALOG_QSS = f"""
+QDialog {{
+    background: {PANEL};
+    color: {TEXT0};
+    font-family: {FONT_STACK};
+}}
+QLabel {{ color: {TEXT1}; font-size: 11px; }}
+QComboBox {{
+    background: {BUBBLE};
+    border: 1px solid {LINE};
+    border-radius: 8px;
+    color: {TEXT0};
+    padding: 6px 10px;
+    font-family: {FONT_STACK};
+    font-size: 12px;
+}}
+QComboBox QAbstractItemView {{
+    background: {PANEL};
+    border: 1px solid {LINE};
+    color: {TEXT0};
+    selection-background-color: {BUBBLE};
+}}
+"""
+
 MENU_QSS = f"""
 QMenu {{
     background: {PANEL};
