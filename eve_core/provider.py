@@ -33,6 +33,7 @@ class ChatResult:
     model: str = ""
     usage: dict[str, Any] = field(default_factory=dict)
     latency_ms: int = 0
+    finish_reason: str = ""  # stop | length | tool_calls …；length 表示被 max_tokens 截断
     raw: dict[str, Any] = field(default_factory=dict)
 
 
@@ -132,6 +133,7 @@ class OpenAICompatProvider:
             model=data.get("model", self.model),
             usage=data.get("usage") or {},
             latency_ms=latency_ms,
+            finish_reason=str(choice.get("finish_reason") or ""),
             raw=data,
         )
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import ctypes
 import ctypes.wintypes as wt
+import re
 import time
 from typing import Any
 
@@ -22,6 +23,9 @@ kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
 
 PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
 WM_CLOSE = 0x0010
+
+# 窗口标题里出现「snake.py -」「README.md -」这种，说明这个窗口里是某个文件的内容
+_DOC_WINDOW = re.compile(r"[^\s]+\.[A-Za-z0-9]{1,6}\s*[-–—]")
 
 
 def _pid_exe(pid: int) -> str:
@@ -182,6 +186,17 @@ def _clipboard_set(text: str) -> None:
     root.destroy()
 
 
+def _foreground_title() -> str:
+    try:
+        hwnd = user32.GetForegroundWindow()
+        length = user32.GetWindowTextLengthW(hwnd)
+        buffer = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(hwnd, buffer, length + 1)
+        return buffer.value or ""
+    except Exception:
+        return ""
+
+
 def key_type(args: dict[str, Any]) -> str:
     """输入文本。
 
@@ -189,6 +204,9 @@ def key_type(args: dict[str, Any]) -> str:
     中文输入法处于激活状态时，合成按键会被 IME 吃掉——实测输入 "hello eve"
     变成了 "helloeve"，空格被当成选词键吞掉了。粘贴绕开整个 IME。
     代价是会临时占用剪贴板，所以前后各做一次保存/恢复。
+
+    `save=true` 会在输入后补一次 Ctrl+S。实测本地模型经常输完就宣布"已保存"，
+    可文件其实还是空的——这个开关让它一次调用就能真的落盘。
     """
     text = str(args.get("text", ""))
     if not text:
@@ -207,6 +225,20 @@ def key_type(args: dict[str, Any]) -> str:
                 _clipboard_set(saved)
             except Exception:
                 pass
+
+    want_save = bool(args.get("save", False))
+    if want_save:
+        time.sleep(0.2)
+        gui.hotkey("ctrl", "s")
+        time.sleep(0.4)
+        return f"[ok] 已输入 {len(text)} 个字符，并按 ctrl+s 保存"
+
+    title = _foreground_title()
+    if _DOC_WINDOW.search(title):
+        return (
+            f"[ok] 已输入 {len(text)} 个字符。**还没保存**——"
+            f"当前窗口 {title!r} 里是未落盘的内容，按 ctrl+s 才写进文件。"
+        )
     return f"[ok] 已输入 {len(text)} 个字符"
 
 
@@ -285,10 +317,19 @@ def register_desktop(registry: ToolRegistry) -> None:
     registry.register(
         ToolSpec(
             name="key_type",
-            description="向当前焦点窗口输入文本（中英文都支持，中文走剪贴板粘贴）。",
+            description=(
+                "向当前焦点窗口输入文本（中英文都支持，中文走剪贴板粘贴）。"
+                "往编辑器里写文件时把 save 设成 true，会在输入后自动 ctrl+s 落盘。"
+            ),
             parameters={
                 "type": "object",
-                "properties": {"text": {"type": "string", "description": "要输入的内容"}},
+                "properties": {
+                    "text": {"type": "string", "description": "要输入的内容"},
+                    "save": {
+                        "type": "boolean",
+                        "description": "输入后是否补一次 ctrl+s 保存，默认 false",
+                    },
+                },
                 "required": ["text"],
             },
             handler=key_type,

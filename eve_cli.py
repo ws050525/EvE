@@ -171,6 +171,8 @@ def main(argv: list[str] | None = None) -> int:
                 f"上下文 {data.get('tokens_before')} → {data.get('tokens_after')} tokens"
                 + (f"（{'，'.join(parts)}）" if parts else "")
             )
+        elif ev.kind == "truncated":
+            status_line.show("输出被截断（max_tokens 太小）")
         elif ev.kind == "error":
             status_line.clear()
 

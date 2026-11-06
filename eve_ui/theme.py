@@ -96,8 +96,7 @@ QPushButton:pressed {{
 }}
 """
 
-MODE_CHIP_QSS = f"""
-QPushButton {{
+MODE_CHIP_QSS = f"""QPushButton {{
     color: {TEXT1};
     background: {PANEL};
     border: 1px solid {LINE};
@@ -111,6 +110,48 @@ QPushButton:hover {{
     border-color: #3A4350;
 }}
 QPushButton::menu-indicator {{ width: 0; }}
+"""
+
+# 许可交互的两个按钮：允许（实心强调）与拒绝（描边低调）。
+# 悬浮球气泡和主窗口卡片共用这一套，避免两处长得不一样。
+ALLOW_BUTTON_QSS = f"""
+QPushButton {{
+    background: {ACCENT};
+    border: none;
+    border-radius: 8px;
+    color: {BG};
+    font-family: {FONT_STACK};
+    font-size: 11px;
+    font-weight: 600;
+    padding: 5px 14px;
+}}
+QPushButton:hover {{ background: #74EBD4; }}
+"""
+
+DENY_BUTTON_QSS = f"""
+QPushButton {{
+    background: transparent;
+    border: 1px solid {LINE};
+    border-radius: 8px;
+    color: {TEXT1};
+    font-family: {FONT_STACK};
+    font-size: 11px;
+    padding: 5px 12px;
+}}
+QPushButton:hover {{
+    color: {TEXT0};
+    border-color: #3A4350;
+    background: {PANEL};
+}}
+"""
+
+# 主窗口里的许可卡片
+CONFIRM_CARD_QSS = f"""
+QFrame#ConfirmCard {{
+    background: {PANEL};
+    border: 1px solid {LINE};
+    border-radius: 12px;
+}}
 """
 
 MENU_QSS = f"""
@@ -132,8 +173,7 @@ QMenu::item:selected {{
 }}
 """
 
-BROWSER_QSS = f"""QTextBrowser {{
-    background: transparent;
+BROWSER_QSS = f"""QTextBrowser {{    background: transparent;
     border: none;
     color: {TEXT0};
     font-family: {FONT_STACK};

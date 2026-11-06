@@ -73,6 +73,16 @@ class ToolRegistry:
         if spec is None:
             return f"[error] 不存在工具 '{name}'"
 
+        if "__raw__" in args:
+            # 参数不是合法 JSON。实测最常见的两个原因：输出被 max_tokens 截断，
+            # 或者字符串里塞了没转义的换行。不给提示的话，模型会一模一样地重试十次。
+            preview = str(args["__raw__"])[:120].replace("\n", "\\n")
+            return (
+                "[error] 工具参数不是合法 JSON，多半是内容太长被 max_tokens 截断了。\n"
+                f"  收到的片段：{preview}…\n"
+                "  改法：一次少写一点，分几次调用（比如先把文件头写进去，再追加剩余部分）。"
+            )
+
         # 低风险工具（读窗口、读网页）不打断人；中高风险才确认
         needs_ok = spec.risk == "high" or (require_confirm and spec.risk != "low")
         if needs_ok:

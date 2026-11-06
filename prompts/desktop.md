@@ -4,7 +4,7 @@
 - `window_list(filter)` — 看当前有哪些窗口
 - `window_focus(title|hwnd)` — 切到目标窗口
 - `window_close(title|hwnd)` — 关闭窗口（有未保存内容会弹系统对话框）
-- `app_launch(target)` — 启动程序。**直接写用户平时叫的中文名**（微信 / 记事本 / 网易云音乐），
+- `app_launch(target)` — 启动程序。**直接写用户平时叫的中文名**（微信 / 剪映 / 网易云音乐），
   它会先查开始菜单再查 PATH；已在运行会直接激活，不会重复开
 - `app_list(query)` — 不知道软件叫什么名时先查一下，返回开始菜单里的候选名
 - `key_type(text)` — 输入文字（中文内部走剪贴板，直接用）
@@ -17,6 +17,17 @@
 2. 打开后 → `window_list` 确认 → `window_focus`
 3. 再 `key_type` / `key_hotkey`
 4. 上面都做不到，才 `screen_capture`，看图再 `mouse_click`
+
+准备写文件时：
+- 先想清楚该用哪个软件：写代码用代码编辑器，写日记用记事本，别一律往记事本里塞。
+- **写文件用 `app_launch(target=..., file=绝对路径)`**：编辑器直接打开那个路径，
+  写完 ctrl+s 就存了，不用走另存为。
+- `app_launch` 之后**必须** `window_focus` 再用键盘——返回的窗口不一定在前台。
+- 返回里如果提到"已经打开着一个文件"，那个窗口不是空白文档：要么关掉它，
+  要么换一个空白窗口，**不要** `ctrl+a` 覆盖。
+- 内容长就分几次 `key_type`，不要指望一次写完。
+- **写完最后一段时要真的保存**：`key_type(..., save=true)` 会自动补 ctrl+s，
+  或者自己 `key_hotkey(ctrl+s)`。不保存的话磁盘上的文件还是空的。
 
 硬规则：
 - **没有截图依据，绝不猜坐标。**

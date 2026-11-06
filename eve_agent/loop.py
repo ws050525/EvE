@@ -373,6 +373,10 @@ class Agent:
             self._log(result, step, text)
             call = self._record_usage(result.usage, result.latency_ms)
 
+            if result.finish_reason == "length":
+                # 输出被 max_tokens 砍了：工具参数会变成非法 JSON，正文也会是半句
+                self.bus.emit("truncated", step=step, model=self.model_id)
+
             if not result.tool_calls:
                 self.messages.append({"role": "assistant", "content": result.content})
                 final = self.persona.decorate(result.content, mode=self.mode_name)

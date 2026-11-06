@@ -18,7 +18,7 @@ from PySide6.QtGui import (
     QPen,
     QRadialGradient,
 )
-from PySide6.QtWidgets import QLabel, QMenu, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QMenu, QPushButton, QVBoxLayout, QWidget
 
 from . import theme
 
@@ -26,9 +26,14 @@ SIZE = 96
 BALL = 40  # 半径
 TICK_MS = 33
 
+ALLOW_QSS = theme.ALLOW_BUTTON_QSS
+DENY_QSS = theme.DENY_BUTTON_QSS
+
 
 class BubbleWindow(QWidget):
-    """球上方的小气泡，只显示"正在做什么"。"""
+    """球上方的小气泡：显示"正在做什么"，或者请求一次许可。"""
+
+    answered = Signal(bool)
 
     def __init__(self) -> None:
         super().__init__(
@@ -39,7 +44,8 @@ class BubbleWindow(QWidget):
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
 
         self.title = QLabel("", self)
-        self.title.setMaximumWidth(200)
+        self.title.setMaximumWidth(220)
+        self.title.setWordWrap(True)
         self.title.setStyleSheet(
             f"color: {theme.TEXT0}; font-family: {theme.FONT_STACK}; font-size: 12px;"
         )
@@ -48,7 +54,7 @@ class BubbleWindow(QWidget):
             f"color: {theme.TEXT1}; font-family: {theme.FONT_STACK}; font-size: 10px;"
         )
         self.detail.setWordWrap(True)
-        self.detail.setMaximumWidth(210)
+        self.detail.setMaximumWidth(220)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(14, 10, 14, 10)
@@ -56,6 +62,26 @@ class BubbleWindow(QWidget):
         layout.addWidget(self.title)
         layout.addWidget(self.detail)
 
+        # 许可行：平时藏起来，只有要确认时才出现
+        self.actions = QWidget(self)
+        row = QHBoxLayout(self.actions)
+        row.setContentsMargins(0, 8, 0, 0)
+        row.setSpacing(6)
+        row.addStretch(1)
+        self.deny_btn = QPushButton("拒绝", self.actions)
+        self.deny_btn.setCursor(Qt.PointingHandCursor)
+        self.deny_btn.setStyleSheet(DENY_QSS)
+        self.deny_btn.clicked.connect(lambda: self._answer(False))
+        self.allow_btn = QPushButton("允许", self.actions)
+        self.allow_btn.setCursor(Qt.PointingHandCursor)
+        self.allow_btn.setStyleSheet(ALLOW_QSS)
+        self.allow_btn.clicked.connect(lambda: self._answer(True))
+        row.addWidget(self.deny_btn)
+        row.addWidget(self.allow_btn)
+        layout.addWidget(self.actions)
+        self.actions.hide()
+
+        self._pending = False
         self._hide_timer = QTimer(self)
         self._hide_timer.setSingleShot(True)
         self._hide_timer.timeout.connect(self.hide)
@@ -65,25 +91,66 @@ class BubbleWindow(QWidget):
         painter.setRenderHint(QPainter.Antialiasing, True)
         rect = self.rect().adjusted(1, 1, -1, -1)
         painter.setBrush(QColor(theme.BUBBLE))
-        painter.setPen(QPen(QColor(theme.LINE), 1))
+        painter.setPen(QPen(QColor(theme.DANGER if self._pending else theme.LINE), 1))
         painter.drawRoundedRect(rect, 10, 10)
 
     def show_message(self, title: str, detail: str = "", anchor: QWidget | None = None) -> None:
+        self._pending = False
+        self.actions.hide()
         self.title.setText(title)
         self.detail.setText(detail)
         self.detail.setVisible(bool(detail))
+        self._place(anchor)
+        self._hide_timer.start(6000)
+
+    def show_confirm(self, title: str, detail: str = "", anchor: QWidget | None = None) -> None:
+        self._hide_timer.stop()  # 等用户决定，不能自己消失
+        self._pending = True
+        self.title.setText(title)
+        self.detail.setText(detail)
+        self.detail.setVisible(bool(detail))
+        self.actions.show()
+        self._place(anchor)
+
+    def finish(self) -> None:
+        """外部取消（比如任务结束了）时收起来，不再等。"""
+        if self._pending:
+            self._pending = False
+            self.answered.emit(False)
+        self.actions.hide()
+        self.hide()
+
+    def _answer(self, allowed: bool) -> None:
+        if not self._pending:
+            return
+        self._pending = False
+        self.actions.hide()
+        self.hide()
+        self.answered.emit(allowed)
+
+    def _place(self, anchor: QWidget | None) -> None:
         self.adjustSize()
         if anchor is not None:
             geo = anchor.frameGeometry()
-            self.move(geo.right() - self.width(), max(0, geo.top() - self.height() - 10))
+            self.move(
+                geo.right() - self.width(),
+                max(0, geo.top() - self.height() - 10),
+            )
         self.show()
         self.raise_()
-        self._hide_timer.start(6000)
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        # 被拖走、被打断也算拒绝，否则 worker 要白等到超时
+        if self._pending:
+            self._pending = False
+            self.answered.emit(False)
+        super().hideEvent(event)
 
 
 class OrbWindow(QWidget):
     clicked = Signal()
     quit_requested = Signal()
+    confirm_answered = Signal(bool)
 
     def __init__(self) -> None:
         super().__init__(
@@ -110,6 +177,7 @@ class OrbWindow(QWidget):
         self._timer.start(TICK_MS)
 
         self._bubble = BubbleWindow()
+        self._bubble.answered.connect(self._on_answered)
 
     # ---------- 状态 ----------
 
@@ -119,6 +187,17 @@ class OrbWindow(QWidget):
 
     def bubble(self, title: str, detail: str = "") -> None:
         self._bubble.show_message(title, detail, self)
+
+    def ask_confirm(self, name: str, detail: str = "") -> None:
+        """在球上方要一次许可。结果走 confirm_answered。"""
+        self._bubble.show_confirm(f"允许我执行 {name}？", detail, self)
+
+    def cancel_confirm(self) -> None:
+        self._bubble.finish()
+
+    def _on_answered(self, allowed: bool) -> None:
+        self.set_state("acting" if allowed else "idle")
+        self.confirm_answered.emit(allowed)
 
     # ---------- 动画 ----------
 

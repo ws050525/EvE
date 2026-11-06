@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import time
@@ -18,6 +19,9 @@ from . import apps
 from .registry import ToolRegistry, ToolSpec
 
 TMP_DIR = Path(__file__).resolve().parents[2] / ".tmp"
+
+# 窗口标题里出现「xxx.md -」「xxx.py -」这种，多半是编辑器里已经打开着一个文件
+_DOC_TITLE = re.compile(r"[^\s]+\.[A-Za-z0-9]{1,6}\s*[-–—]")
 
 _ALIASES = {
     "notepad": "notepad.exe",
@@ -106,33 +110,109 @@ def _launch_process(argv: list[str]) -> subprocess.Popen:
 # ---------- 三条启动路径 ----------
 
 
-def _launch_executable(cmd: str, resolved: str | None = None) -> str:
+def _window_note(title: str) -> str:
+    """窗口里已经开着文件时，提醒一句——不提醒的话模型会 ctrl+a 直接覆盖掉。"""
+    if _DOC_TITLE.search(_clean(title)):
+        return "。注意：这个窗口里已经打开着一个文件，不是空白文档，别 ctrl+a 覆盖它"
+    return ""
+
+
+def _launch_executable(cmd: str, resolved: str | None = None, file_path: Path | None = None) -> str:
     exe_name = os.path.basename(cmd).lower()
-    running = _already_running(exe_name)
-    if running is not None:
-        return (
-            f"[ok] {cmd} 已在运行，已激活现有窗口：{_clean(running['title'])!r}，"
-            f"hwnd={running['hwnd']}（没有重复启动）"
-        )
+    argv = [resolved or cmd] + ([str(file_path)] if file_path else [])
+
+    # 要打开具体文件时不要复用已有窗口：我们想要的是一个新标签页 / 新文档
+    if file_path is None:
+        running = _already_running(exe_name)
+        if running is not None:
+            return (
+                f"[ok] {cmd} 已在运行，已激活现有窗口：{_clean(running['title'])!r}，"
+                f"hwnd={running['hwnd']}（没有重复启动）"
+            )
 
     before = {w["hwnd"] for w in _enum_windows()}
     try:
-        _launch_process([resolved or cmd])
+        _launch_process(argv)
     except OSError as exc:
         return f"[error] 启动失败：{exc}"
+
+    if file_path is not None:
+        return _open_file_note(cmd, file_path, before)
 
     win = _wait_new_window(before)
     if win is None:
         return f"[ok] 已启动 {cmd}，但 {LAUNCH_TIMEOUT:.0f} 秒内没检测到新窗口（可能还在加载或已最小化）"
     return (
-        f"[ok] 已启动 {cmd}，窗口标题：{_clean(win['title'])!r}，hwnd={win['hwnd']}。"
+        f"[ok] 已启动 {cmd}，窗口标题：{_clean(win['title'])!r}，hwnd={win['hwnd']}"
+        f"{_window_note(win['title'])}。"
         f"下一步用 window_focus(hwnd={win['hwnd']}) 激活它——hwnd 比标题稳，标题可能会变。"
     )
 
 
-def _launch_from_menu(entry: apps.AppEntry, query: str, others: list[apps.AppEntry]) -> str:
+def _open_file_note(label: str, file_path: Path, before: set) -> str:
+    """带文件启动之后的结果说明：多半是复用已有编辑器窗口，所以不硬等新窗口。"""
+    win = _wait_new_window(before, timeout=3.0)
+    if win is None:
+        return (
+            f"[ok] 已用 {label} 打开 {file_path}。没检测到新窗口——"
+            "多半是在已经开着的编辑器里多了一个标签页，去看看。"
+        )
+    return (
+        f"[ok] 已用 {label} 打开 {file_path}，窗口标题：{_clean(win['title'])!r}，"
+        f"hwnd={win['hwnd']}{_window_note(win['title'])}。"
+        f"先 window_focus(hwnd={win['hwnd']}) 再打字；内容写完后 ctrl+s 就直接存到这个路径，不会再弹另存为。"
+    )
+
+
+def _resolve_cli(entry: apps.AppEntry, target: str) -> str:
+    """给"要在编辑器里打开文件"找一个命令行入口。
+
+    VS Code 这类编辑器都带 CLI（code / subl / cursor），用 `<cli> <文件>` 打开
+    就能直接落到目标路径，不用走另存为对话框。名字对不上就算了，走默认程序。
+    """
+    candidates = [target] if " " not in target else []
+    name = entry.name if entry else ""
+    compact = re.sub(r"[^A-Za-z0-9]+", "", name.casefold())
+    if compact:
+        candidates.append(compact)
+    words = [w for w in re.split(r"[^A-Za-z0-9]+", name) if w]
+    if words:
+        candidates.append(words[-1].casefold())
+
+    for candidate in candidates:
+        if not candidate:
+            continue
+        found = shutil.which(candidate)
+        if found:
+            return found
+    return ""
+
+
+def _launch_from_menu(
+    entry: apps.AppEntry,
+    query: str,
+    others: list[apps.AppEntry],
+    file_path: Path | None = None,
+) -> str:
     before = {w["hwnd"] for w in _enum_windows()}
+    label = entry.name
+
     try:
+        if file_path is not None:
+            # 优先用命令行入口：能直接把文件路径交给编辑器
+            cli = _resolve_cli(entry, "") if not entry.is_path else entry.app_id
+            if cli:
+                _launch_process([cli, str(file_path)])
+                return _open_file_note(label, file_path, before)
+            # 没有 CLI：先建好空文件，交给系统默认程序，省掉另存为
+            os.startfile(str(file_path))
+            note = (
+                f"[ok] 已用 {label or '系统默认程序'} 打开 {file_path}"
+                "（这个程序没有命令行入口，走的是文件关联）。"
+                "写完记得保存；如果打开的不是你想用的编辑器，换个 target 再试。"
+            )
+            return note
+
         launched = apps.launch_entry(entry)
     except OSError as exc:
         return f"[error] 启动失败：{exc}"
@@ -143,7 +223,10 @@ def _launch_from_menu(entry: apps.AppEntry, query: str, others: list[apps.AppEnt
         head += f"（匹配的是「{entry.name}」）"
 
     if win is not None:
-        head += f"，窗口标题：{_clean(win['title'])!r}，hwnd={win['hwnd']}"
+        head += (
+            f"，窗口标题：{_clean(win['title'])!r}，hwnd={win['hwnd']}"
+            f"{_window_note(win['title'])}"
+        )
     else:
         head += "，但没检测到新窗口（可能已在运行、或启动较慢）"
 
@@ -161,28 +244,42 @@ def app_launch(args: dict) -> str:
     if not target:
         return "[error] 缺少 target"
 
+    file_path = None
+    raw_file = str(args.get("file", "") or "").strip()
+    if raw_file:
+        candidate = Path(raw_file)
+        if not candidate.is_absolute():
+            return f"[error] file 要写绝对路径，收到 {raw_file!r}"
+        try:
+            candidate.parent.mkdir(parents=True, exist_ok=True)
+            if not candidate.exists():
+                candidate.touch()  # 先建空文件：编辑器直接落到目标路径，不用另存为
+        except OSError as exc:
+            return f"[error] 无法准备文件 {candidate}：{exc}"
+        file_path = candidate
+
     # 1. 别名：直接对应 exe，最快也最稳
     alias = _ALIASES.get(target.lower())
     if alias:
         resolved = shutil.which(alias)
         if resolved or Path(alias).exists():
-            return _launch_executable(alias, resolved)
+            return _launch_executable(alias, resolved, file_path)
         # 别名指向的 exe 找不到（比如精简版系统没带画图），继续往下找
 
     # 2. 用户直接给了路径
     if Path(target).exists():
-        return _launch_executable(target, target)
+        return _launch_executable(target, target, file_path)
 
     # 3. 开始菜单：这里是"用户装了但不在 PATH 里"的那些程序
     index = apps.default_index()
     matches = index.find(target, limit=5)
     if matches:
-        return _launch_from_menu(matches[0], target, matches)
+        return _launch_from_menu(matches[0], target, matches, file_path)
 
     # 4. PATH
     resolved = shutil.which(target)
     if resolved:
-        return _launch_executable(target, resolved)
+        return _launch_executable(target, resolved, file_path)
 
     # 5. 都没找到：给几个相近的名字，别让模型自己瞎猜
     hints = index.search(target, limit=5)
@@ -241,12 +338,18 @@ def register_builtin(registry: ToolRegistry) -> None:
             description=(
                 "启动一个程序。target 写用户平时叫的名字就行——中文名（微信、记事本）也可以。"
                 "查找顺序：别名 → 路径 → 开始菜单 → PATH。"
+                "要在某个程序里**写文件**时，把 file 一起传进来（绝对路径）："
+                "编辑器会直接打开那个路径，写完 ctrl+s 就保存，不会弹另存为。"
                 "开始菜单匹配不上时会返回相近的名字，照着那些名字重试。"
             ),
             parameters={
                 "type": "object",
                 "properties": {
-                    "target": {"type": "string", "description": "程序名（如 微信 / 记事本）或可执行文件路径"}
+                    "target": {"type": "string", "description": "程序名（如 微信 / Visual Studio Code）或可执行文件路径"},
+                    "file": {
+                        "type": "string",
+                        "description": "可选，要打开的文件的绝对路径。文件不存在会先创建。",
+                    },
                 },
                 "required": ["target"],
             },

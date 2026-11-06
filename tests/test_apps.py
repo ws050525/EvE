@@ -51,7 +51,9 @@ class Fixture:
         builtin._enum_windows = lambda: []
         builtin._wait_new_window = lambda before, timeout=0: None
         builtin._already_running = lambda exe: None
-        builtin._launch_executable = lambda cmd, resolved=None: f"[stub] exec {cmd}"
+        builtin._launch_executable = (
+            lambda cmd, resolved=None, file_path=None: f"[stub] exec {cmd}"
+        )
         return self
 
     def __exit__(self, *exc):
@@ -210,6 +212,37 @@ def alias_still_wins_over_start_menu():
 @case
 def missing_target_is_an_error():
     assert builtin.app_launch({}).startswith("[error]")
+
+
+# ---------- 带文件启动 ----------
+
+
+@case
+def relative_file_is_rejected():
+    out = builtin.app_launch({"target": "记事本", "file": "snake.py"})
+    assert out.startswith("[error]") and "绝对路径" in out, out
+
+
+@case
+def file_is_created_before_lookup():
+    with tempfile.TemporaryDirectory() as tmp:
+        target = Path(tmp) / "deep" / "snake.py"
+        with Fixture([]):
+            out = builtin.app_launch({"target": "不存在的软件XYZ", "file": str(target)})
+        assert target.exists(), "先建空文件，编辑器才能直接落到目标路径"
+        assert out.startswith("[error]"), out
+
+
+@case
+def resolve_cli_uses_last_word_of_the_name():
+    original = builtin.shutil.which
+    builtin.shutil.which = lambda name: "C:/fake/code.cmd" if name == "code" else None
+    try:
+        found = builtin._resolve_cli(entry("Visual Studio Code"), "")
+        assert found == "C:/fake/code.cmd", found
+        assert builtin._resolve_cli(entry("记事本"), "") == "", "对不上就返回空，交给默认程序"
+    finally:
+        builtin.shutil.which = original
 
 
 # ---------- app_list ----------

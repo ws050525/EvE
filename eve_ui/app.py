@@ -35,6 +35,25 @@ def main(argv: list[str] | None = None) -> int:
         delay = int(os.environ.get("EVE_DEMO_DELAY", "2500"))
         QTimer.singleShot(delay, lambda: window.demo_send(demo))
 
+    # 开发期：模拟一次工具许可，用来看确认气泡 / 卡片的样式（orb / card）
+    demo_confirm = os.environ.get("EVE_DEMO_CONFIRM")
+    if demo_confirm:
+        delay = int(os.environ.get("EVE_DEMO_CONFIRM_DELAY", "3000"))
+
+        def fire_confirm() -> None:
+            if demo_confirm == "orb":
+                window._collapse_to_orb()
+                QTimer.singleShot(
+                    400,
+                    lambda: window._on_confirm_required(
+                        "app_launch", {"target": "微信"}
+                    ),
+                )
+            else:
+                window._on_confirm_required("app_launch", {"target": "微信"})
+
+        QTimer.singleShot(delay, fire_confirm)
+
     # 开发期：窗口自身截图后退出，用于把界面图放进文档
     shot = os.environ.get("EVE_SHOT")
     if shot:
