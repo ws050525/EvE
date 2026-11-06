@@ -35,7 +35,7 @@ class Agent:
         self.cfg = cfg
         self.bus = bus or EventBus()
         self.runtime = runtime or RuntimeManager(cfg, on_event=self._emit_runtime)
-        self.registry: ToolRegistry = build_default_registry()
+        self.registry: ToolRegistry = build_default_registry(cfg)
         self.persona = Persona()
         self.mode_name = mode_name or cfg.default_mode
         self.mode: ModeConfig

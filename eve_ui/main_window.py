@@ -70,7 +70,9 @@ class ChatWindow(QWidget):
         self._orb.clicked.connect(self._restore_from_orb)
         self._orb.quit_requested.connect(self._quit_app)
         self._wire()
-        self._bridge.ready.connect(lambda *_: self._bridge.preload())
+        # 指定了 EVE_MODEL 时跳过本地预加载，避免白起一次本地引擎
+        if not os.environ.get("EVE_MODEL"):
+            self._bridge.ready.connect(lambda *_: self._bridge.preload())
         self._bridge.start()
 
     # ---------- 构建 ----------

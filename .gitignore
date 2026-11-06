@@ -9,3 +9,4 @@ logs/
 .env
 config.local.toml
 .vscode/
+.data/

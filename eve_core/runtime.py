@@ -265,11 +265,11 @@ class RuntimeManager:
         if model.api_key_env:
             api_key = os.environ.get(model.api_key_env, "").strip()
         if not api_key:
-            api_key = self.keys.get(model.id) or ""
+            api_key = self.keys.get(model.api_key_ref or model.id) or ""
         if not api_key:
             hint = f"，或设置环境变量 {model.api_key_env}" if model.api_key_env else ""
             raise ConfigError(
-                f"模型 '{model.id}' 缺少 API Key。用 /key {model.id} 保存（DPAPI 加密）{hint}"
+                f"模型 '{model.id}' 缺少 API Key。用 /key {model.api_key_ref or model.id} 保存（DPAPI 加密）{hint}"
             )
 
         return ProviderConfig(

@@ -61,6 +61,7 @@ class ModelConfig:
     base_url: str = ""
     model: str = ""
     api_key_env: str = ""
+    api_key_ref: str = ""  # 密钥在 KeyStore 里挂哪个 id，留空就用模型 id
 
     def detect_kind(self) -> str:
         if self.kind:
@@ -97,6 +98,7 @@ class AppConfig:
     models: dict[str, ModelConfig]
     modes: dict[str, ModeConfig]
     engines: dict[str, EngineConfig]
+    web_backend: str = "auto"  # auto | deepseek | bing
 
     def model(self, model_id: str) -> ModelConfig:
         if model_id not in self.models:
@@ -206,4 +208,5 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
         models=models,
         modes=modes,
         engines=engines,
+        web_backend=str(app.get("web_backend", "auto")),
     )

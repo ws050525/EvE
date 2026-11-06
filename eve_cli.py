@@ -30,7 +30,7 @@ HELP = """  /models              列出已配置的模型
   /status              运行时状态（引擎、端口、加载耗时）
   /persona             人格状态（抗议等级、连续命令数、颜文字节流）
   /stop                停止本地引擎，释放显存
-  /key <id>            为云端模型保存 API Key（DPAPI 加密）
+   /key <id>            为云端模型保存 API Key（DPAPI 加密）
   /reset               清空上下文
   /tools               当前档位可用工具
   /where               当前 provider / 模型 / 端点

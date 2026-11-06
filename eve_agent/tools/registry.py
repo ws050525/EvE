@@ -87,7 +87,7 @@ class ToolRegistry:
             return f"[error] {type(exc).__name__}: {exc}"
 
 
-def build_default_registry() -> ToolRegistry:
+def build_default_registry(cfg=None) -> ToolRegistry:
     from .builtin import register_builtin
     from .desktop import register_desktop
     from .web import register_web
@@ -95,5 +95,5 @@ def build_default_registry() -> ToolRegistry:
     registry = ToolRegistry()
     register_builtin(registry)
     register_desktop(registry)
-    register_web(registry)
+    register_web(registry, cfg)
     return registry
