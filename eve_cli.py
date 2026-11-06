@@ -30,6 +30,8 @@ HELP = """  /models              列出已配置的模型
   /mode <name>         切换档位（会重置上下文）
   /status              运行时状态（引擎、端口、加载耗时、上下文）
   /cost                本次会话的 token 用量与估算花费
+  /context [n|auto]    查看或设置上下文预算（token），auto = 按模型窗口
+  /steps [n]           查看或设置单条消息的步数上限
   /persona             人格状态（抗议等级、连续命令数、颜文字节流）
   /stop                停止本地引擎，释放显存
    /key <id>            为云端模型保存 API Key（DPAPI 加密）
@@ -261,6 +263,10 @@ def main(argv: list[str] | None = None) -> int:
             used, budget = agent.context_usage
             summary = f"，摘要 {len(agent.summary)} 字符" if agent.summary else ""
             print(f"  上下文≈{used}/{budget} tokens（{len(agent.messages) - 1} 条消息{summary}）")
+            setting = agent.context_setting
+            print(
+                f"  预算设定={'自动' if setting == 0 else setting} · 步数上限={agent.max_steps}"
+            )
             totals = agent.usage.totals()
             if totals.calls:
                 print(
@@ -293,6 +299,34 @@ def main(argv: list[str] | None = None) -> int:
                     f"{total.usage.total} tokens  {money}"
                 )
             print("  （单价读 config.toml，按高峰档上限估算，仅供心里有数）")
+            continue
+        if line.startswith("/context"):
+            parts = line.split()
+            if len(parts) == 1:
+                setting = agent.context_setting
+                label = "自动" if setting == 0 else f"{setting} tokens"
+                print(f"  上下文预算：{label}（生效 {agent.context_limit} tokens）")
+                print("  用法：/context 8000  或  /context auto")
+                continue
+            raw = parts[1].lower()
+            try:
+                value = 0 if raw in {"auto", "0"} else int(raw)
+            except ValueError:
+                print("  用法：/context 8000  或  /context auto")
+                continue
+            print("  " + agent.set_context_limit(value))
+            continue
+        if line.startswith("/steps"):
+            parts = line.split()
+            if len(parts) == 1:
+                print(f"  步数上限：{agent.max_steps} 步（用法：/steps 20）")
+                continue
+            try:
+                value = int(parts[1])
+            except ValueError:
+                print("  用法：/steps 20")
+                continue
+            print("  " + agent.set_max_steps(value))
             continue
         if line == "/stop":
             runtime.shutdown()

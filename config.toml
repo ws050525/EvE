@@ -10,9 +10,10 @@ model_dirs = ["models"]      # /scan 会扫描这些目录下的 *.gguf
 
 # ---------- 上下文预算 ----------
 # 本地 8192 窗口，长任务几轮就撞墙。每步请求前估算一次，超了就先摘要、再截断。
-context_tokens = 3500        # 单次请求的 prompt 预算（估算值）；填 0 = 按模型窗口自动
+context_tokens = 0           # prompt 预算；0 = 按模型窗口自动（留出输出空间，上限 24k）
 keep_recent_turns = 4        # 压缩时至少保留最近几轮原文
 tool_output_chars = 6000     # 单个工具结果最多入库多少字符
+max_steps = 12               # 单条消息最多走几步；之前是 6，长任务经常差一步
 
 # ---------- work 档的边界 ----------
 work_root = "."              # 文件工具和 shell_exec 的根目录，越界一律拒绝
@@ -58,6 +59,7 @@ kind = "cloud_api"
 base_url = "https://api.deepseek.com/v1"
 model = "deepseek-flash"
 api_key_ref = "deepseek"
+ctx = 131072                 # 云端窗口给足，实际预算由 context_tokens 卡
 price_in = 2.0               # 输入（未命中缓存）
 price_out = 8.0              # 输出
 price_cached_in = 0.2        # 输入（命中缓存）
@@ -68,6 +70,7 @@ kind = "cloud_api"
 base_url = "https://api.deepseek.com/v1"
 model = "deepseek-v4-pro"
 api_key_ref = "deepseek"
+ctx = 131072
 price_in = 9.0
 price_out = 27.0
 price_cached_in = 0.9
@@ -97,3 +100,4 @@ tools = ["web_search", "http_get", "fs_read", "fs_write", "fs_list", "shell_exec
 require_confirm = true
 max_tokens = 2048
 temperature = 0.3
+context_tokens = 12000       # 云端按 token 计费，给足但别放飞（12k 约 ¥0.11 / 轮）

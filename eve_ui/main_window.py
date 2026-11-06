@@ -68,6 +68,9 @@ class ChatWindow(QWidget):
         self._last_usage: dict = {}
         self._last_latency = 0
         self._session_cost = 0.0
+        self._ctx_setting = 0  # 0 = 自动
+        self._ctx_effective = 0
+        self._steps = 12
 
         self._build()
         self._bridge = AgentBridge(config_path, self, autostart=False)
@@ -152,6 +155,15 @@ class ChatWindow(QWidget):
         self.mode_chip.setStyleSheet(theme.MODE_CHIP_QSS)
         self.mode_chip.clicked.connect(self._open_mode_menu)
         layout.addWidget(self.mode_chip, 0, Qt.AlignVCenter)
+        layout.addSpacing(4)
+
+        self.ctx_chip = QPushButton("ctx", bar)
+        self.ctx_chip.setFixedHeight(20)
+        self.ctx_chip.setCursor(Qt.PointingHandCursor)
+        self.ctx_chip.setStyleSheet(theme.MODE_CHIP_QSS)
+        self.ctx_chip.setToolTip("上下文预算与步数上限")
+        self.ctx_chip.clicked.connect(self._open_limits_menu)
+        layout.addWidget(self.ctx_chip, 0, Qt.AlignVCenter)
         layout.addSpacing(4)
 
         self.model_label = QPushButton("", bar)
@@ -255,6 +267,7 @@ class ChatWindow(QWidget):
         self._bridge.mode_changed.connect(self._on_mode_changed)
         self._bridge.modes_ready.connect(self._on_modes_ready)
         self._bridge.models_ready.connect(self._on_models_ready)
+        self._bridge.limits_changed.connect(self._on_limits_changed)
         self._bridge.confirm_required.connect(self._on_confirm_required)
 
     # ---------- 交互 ----------
@@ -383,6 +396,63 @@ class ChatWindow(QWidget):
         self.cost_label.setText(
             format_money(self._session_cost) if self._session_cost > 0 else ""
         )
+
+    # ---------- 上下文预算 / 步数 ----------
+
+    def _on_limits_changed(self, setting: int, effective: int, steps: int) -> None:
+        self._ctx_setting = int(setting)
+        self._ctx_effective = int(effective)
+        self._steps = int(steps)
+        if self._ctx_setting == 0:
+            self.ctx_chip.setText(f"ctx {self._ctx_effective / 1000:.1f}k")
+        else:
+            self.ctx_chip.setText(f"ctx {self._ctx_effective // 1000}k")
+        self.ctx_chip.setToolTip(
+            f"上下文预算 {self._ctx_effective} tokens"
+            f"（{'自动' if self._ctx_setting == 0 else '手动'}）· 步数上限 {self._steps} 步"
+        )
+
+    def _open_limits_menu(self) -> None:
+        if self._busy:
+            self._set_status("这轮跑完再改设置…")
+            return
+        menu = self._build_limits_menu()
+        menu.exec(self.ctx_chip.mapToGlobal(QPoint(0, self.ctx_chip.height() + 4)))
+
+    def _build_limits_menu(self) -> QMenu:
+        """预算与步数菜单：跟模型菜单一样，拼出来不弹，方便检查。"""
+        menu = QMenu(self)
+        menu.setStyleSheet(theme.MENU_QSS)
+
+        head = menu.addAction("上下文预算")
+        head.setEnabled(False)
+        for value, text in (
+            (0, "自动（按模型窗口）"),
+            (4000, "4k tokens"),
+            (8000, "8k tokens"),
+            (16000, "16k tokens"),
+            (24000, "24k tokens"),
+        ):
+            action = menu.addAction(text)
+            action.setCheckable(True)
+            action.setChecked(self._ctx_setting == value)
+            action.triggered.connect(lambda _=False, v=value: self._apply_context(v))
+
+        menu.addSeparator()
+        head = menu.addAction("步数上限")
+        head.setEnabled(False)
+        for value in (6, 12, 20, 30):
+            action = menu.addAction(f"{value} 步")
+            action.setCheckable(True)
+            action.setChecked(self._steps == value)
+            action.triggered.connect(lambda _=False, v=value: self._apply_steps(v))
+        return menu
+
+    def _apply_context(self, tokens: int) -> None:
+        self._bridge.set_context_limit(tokens)
+
+    def _apply_steps(self, steps: int) -> None:
+        self._bridge.set_max_steps(steps)
 
     def _metrics_text(self) -> str:
         """状态栏那行小字：耗时 · token · 花费。"""
@@ -577,6 +647,10 @@ class ChatWindow(QWidget):
             self._set_status(f"上下文 ≈{after} tokens" if after else "")
         elif kind == "usage":
             self._update_cost(data)
+        elif kind == "settings":
+            message = str(data.get("message") or "")
+            if message:
+                self._set_status(message)
         elif kind == "reply_done":
             self._last_latency = int(data.get("latency_ms") or 0)
         elif kind == "error":

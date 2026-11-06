@@ -91,6 +91,8 @@ class ModeConfig:
     require_confirm: bool = False
     max_tokens: int = 512
     temperature: float = 0.7
+    # 档位级上下文预算：0 = 继承 [app].context_tokens（同样是 0 就按模型窗口自动）
+    context_tokens: int = 0
 
 
 @dataclass
@@ -105,9 +107,10 @@ class AppConfig:
     engines: dict[str, EngineConfig]
     web_backend: str = "auto"  # auto | deepseek | bing
     work_root: Path | None = None  # work 档文件工具的根目录，默认项目根
-    context_tokens: int = 3500  # 单次请求的 prompt 预算（估算值）；<=0 表示按模型窗口自动
+    context_tokens: int = 0  # prompt 预算；0 = 按模型窗口自动
     keep_recent_turns: int = 4  # 压缩上下文时至少保留最近几轮原文
     tool_output_chars: int = 6000  # 单个工具结果最多入库多少字符
+    max_steps: int = 12  # 单条消息最多走几步（工具调用来回算一步）
 
     def model(self, model_id: str) -> ModelConfig:
         if model_id not in self.models:
@@ -219,7 +222,8 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
         engines=engines,
         web_backend=str(app.get("web_backend", "auto")),
         work_root=resolve(app.get("work_root", ".")),
-        context_tokens=int(app.get("context_tokens", 3500)),
+        context_tokens=int(app.get("context_tokens", 0)),
         keep_recent_turns=int(app.get("keep_recent_turns", 4)),
         tool_output_chars=int(app.get("tool_output_chars", 6000)),
+        max_steps=max(1, int(app.get("max_steps", 12))),
     )

@@ -184,6 +184,60 @@ def usage_survives_mode_switch():
 
 
 @case
+def context_budget_defaults_to_auto():
+    agent = _agent("chat")  # 本地 8192，留 512 输出和 512 余量
+    budget = agent.context_policy.max_prompt_tokens
+    assert agent.context_setting == 0, agent.context_setting
+    assert 6000 <= budget <= 8000, budget
+
+
+@case
+def mode_can_override_budget():
+    agent = _agent("work")  # config.toml 里 work 档写了 12000
+    assert agent.context_policy.max_prompt_tokens == 12000
+
+
+@case
+def runtime_budget_override_wins_and_resets():
+    agent = _agent("chat")
+    auto = agent.context_policy.max_prompt_tokens
+
+    agent.set_context_limit(4000)
+    assert agent.context_setting == 4000
+    assert agent.context_policy.max_prompt_tokens == 4000
+
+    agent.set_context_limit(0)
+    assert agent.context_setting == 0
+    assert agent.context_policy.max_prompt_tokens == auto
+
+
+@case
+def budget_never_exceeds_model_window():
+    agent = _agent("chat")
+    agent.set_context_limit(24000)  # 远超本地 8192 窗口
+    limit = agent.context_policy.max_prompt_tokens
+    assert limit < 8192, limit
+    assert limit == 8192 - agent.mode.max_tokens - 128, limit
+
+
+@case
+def max_steps_comes_from_config_and_is_clamped():
+    from eve_agent.loop import MAX_STEPS_CAP
+
+    agent = _agent("chat")
+    assert agent.max_steps == 12, agent.max_steps  # config.toml 里 max_steps = 12
+
+    agent.set_max_steps(30)
+    assert agent.max_steps == 30
+
+    agent.set_max_steps(999)
+    assert agent.max_steps == MAX_STEPS_CAP, agent.max_steps
+
+    agent.set_max_steps(-5)
+    assert agent.max_steps == 1, agent.max_steps
+
+
+@case
 def model_rows_flag_prices_and_active():
     from eve_ui.bridge import model_rows
 

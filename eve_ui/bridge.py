@@ -53,6 +53,7 @@ class AgentWorker(QObject):
     mode_changed = Signal(str, str)        # mode, model_id
     modes_ready = Signal(list)
     models_ready = Signal(list)            # [{id,label,kind,price_in,price_out,active}]
+    limits_changed = Signal(int, int, int)  # 预算设定（0=自动）、生效预算、步数上限
     finished = Signal()
 
     def __init__(self, config_path: str | None = None):
@@ -71,9 +72,18 @@ class AgentWorker(QObject):
             self._agent = Agent(cfg, cfg.default_mode, bus=bus)
             self.modes_ready.emit(sorted(cfg.modes))
             self.models_ready.emit(model_rows(cfg, self._agent.model_id))
+            self._emit_limits()
             self.ready.emit(self._agent.model_id, cfg.model(self._agent.model_id).label)
         except Exception as exc:  # 配置错误也要让界面显示出来
             self.failed.emit(str(exc))
+
+    def _emit_limits(self) -> None:
+        if self._agent is not None:
+            self.limits_changed.emit(
+                self._agent.context_setting,
+                self._agent.context_limit,
+                self._agent.max_steps,
+            )
 
     def _on_event(self, ev) -> None:
         # 这里在子线程执行，emit 会自动排队到主线程
@@ -128,6 +138,7 @@ class AgentWorker(QObject):
             self._agent.switch_mode(mode_name)
             self.mode_changed.emit(self._agent.mode_name, self._agent.model_id)
             self.models_ready.emit(model_rows(self._agent.cfg, self._agent.model_id))
+            self._emit_limits()
             self.ready.emit(
                 self._agent.model_id, self._agent.cfg.model(self._agent.model_id).label
             )
@@ -142,9 +153,32 @@ class AgentWorker(QObject):
         try:
             self._agent.switch_model(model_id)
             self.models_ready.emit(model_rows(self._agent.cfg, self._agent.model_id))
+            self._emit_limits()
             self.ready.emit(
                 self._agent.model_id, self._agent.cfg.model(self._agent.model_id).label
             )
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+    @Slot(int)
+    def set_context_limit(self, tokens: int) -> None:
+        if self._agent is None:
+            return
+        try:
+            note = self._agent.set_context_limit(tokens)
+            self.event.emit("settings", {"message": note})
+            self._emit_limits()
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
+    @Slot(int)
+    def set_max_steps(self, steps: int) -> None:
+        if self._agent is None:
+            return
+        try:
+            note = self._agent.set_max_steps(steps)
+            self.event.emit("settings", {"message": note})
+            self._emit_limits()
         except Exception as exc:
             self.failed.emit(str(exc))
 
@@ -170,10 +204,13 @@ class AgentBridge(QObject):
     mode_changed = Signal(str, str)
     modes_ready = Signal(list)
     models_ready = Signal(list)
+    limits_changed = Signal(int, int, int)
 
     ask_requested = Signal(str)
     mode_requested = Signal(str)
     model_requested = Signal(str)
+    context_requested = Signal(int)
+    steps_requested = Signal(int)
     preload_requested = Signal()
     shutdown_requested = Signal()
 
@@ -187,6 +224,8 @@ class AgentBridge(QObject):
         self.ask_requested.connect(self._worker.ask)
         self.mode_requested.connect(self._worker.set_mode)
         self.model_requested.connect(self._worker.set_model)
+        self.context_requested.connect(self._worker.set_context_limit)
+        self.steps_requested.connect(self._worker.set_max_steps)
         self.preload_requested.connect(self._worker.preload)
         self.shutdown_requested.connect(self._worker.shutdown)
 
@@ -198,6 +237,7 @@ class AgentBridge(QObject):
         self._worker.mode_changed.connect(self.mode_changed)
         self._worker.modes_ready.connect(self.modes_ready)
         self._worker.models_ready.connect(self.models_ready)
+        self._worker.limits_changed.connect(self.limits_changed)
 
         if autostart:
             self.start()
@@ -219,6 +259,12 @@ class AgentBridge(QObject):
 
     def set_model(self, model_id: str) -> None:
         self.model_requested.emit(model_id)
+
+    def set_context_limit(self, tokens: int) -> None:
+        self.context_requested.emit(int(tokens))
+
+    def set_max_steps(self, steps: int) -> None:
+        self.steps_requested.emit(int(steps))
 
     def answer_confirm(self, allowed: bool) -> None:
         # 直接调用，不经信号——worker 正阻塞着等这个结果

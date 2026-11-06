@@ -27,7 +27,13 @@ from .context import (
 from .persona import Persona
 from .tools.registry import ToolRegistry, build_default_registry
 
-MAX_STEPS = 6
+MAX_STEPS_DEFAULT = 12  # 只有配置里拿不到时才用
+MIN_STEPS = 1
+MAX_STEPS_CAP = 60
+
+# 自动预算的天花板：云端窗口再大也别一上来就塞满，那是真金白银
+AUTO_BUDGET_CAP = 24_000
+AUTO_BUDGET_FLOOR = 1024
 
 ConfirmFn = Callable[[Any, dict[str, Any]], bool]
 
@@ -50,6 +56,8 @@ class Agent:
         self.mode: ModeConfig
         self.messages: list[dict[str, Any]] = []
         self._summary: str = ""  # 已经被压掉的早先轮次的摘要
+        self._context_limit: int = 0  # 运行时覆盖：0 = 跟随配置/自动
+        self._max_steps: int = getattr(cfg, "max_steps", MAX_STEPS_DEFAULT)
         self._model_override: str | None = None
         self._provider: Provider | None = None
         self._provider_model_id: str = ""
@@ -145,18 +153,53 @@ class Agent:
 
     @property
     def context_policy(self) -> ContextPolicy:
-        """prompt 预算：配置值，再按模型真实窗口兜一次底。"""
+        """prompt 预算：运行时覆盖 > 档位 > 全局 > 按窗口自动，最后按真实窗口兜底。"""
         model = self.cfg.model(self.model_id)
         ctx = model.ctx or 8192
-        budget = self.cfg.context_tokens
-        if budget <= 0:  # 0 = 自动：模型窗口的七成，最多 3500
-            budget = min(3500, max(1024, ctx * 7 // 10))
         ceiling = max(512, ctx - self.mode.max_tokens - 128)
+
+        budget = self._context_limit or self.mode.context_tokens or self.cfg.context_tokens
+        if budget <= 0:  # 自动：窗口减去输出和一点余量，再封顶
+            budget = ctx - self.mode.max_tokens - 512
+            budget = min(AUTO_BUDGET_CAP, max(AUTO_BUDGET_FLOOR, budget))
+        budget = max(AUTO_BUDGET_FLOOR, budget)
+
         return ContextPolicy(
             max_prompt_tokens=min(budget, ceiling),
             keep_recent_turns=max(1, self.cfg.keep_recent_turns),
-            summary_max_tokens=min(600, max(200, budget // 6)),
+            summary_max_tokens=min(800, max(200, budget // 6)),
         )
+
+    @property
+    def context_limit(self) -> int:
+        """当前生效的预算（0 表示"自动"这个设定本身，不是 0 token）。"""
+        return self.context_policy.max_prompt_tokens
+
+    @property
+    def context_setting(self) -> int:
+        """用户设定的预算：0 = 自动。跟 context_limit（生效值）不是一回事。"""
+        return self._context_limit
+
+    @property
+    def max_steps(self) -> int:
+        return self._max_steps
+
+    def set_context_limit(self, tokens: int) -> str:
+        """运行时改预算；传 0 回到"自动"。立刻生效，下一轮就按新预算裁。"""
+        tokens = int(tokens)
+        if tokens < 0:
+            tokens = 0
+        if tokens > AUTO_BUDGET_CAP:
+            tokens = AUTO_BUDGET_CAP
+        self._context_limit = tokens
+        budget = self.context_policy.max_prompt_tokens
+        label = "自动" if tokens == 0 else f"{tokens} tokens"
+        return f"上下文预算已设为 {label}（当前生效 {budget} tokens）"
+
+    def set_max_steps(self, steps: int) -> str:
+        steps = max(MIN_STEPS, min(MAX_STEPS_CAP, int(steps)))
+        self._max_steps = steps
+        return f"步数上限已设为 {steps} 步"
 
     @property
     def context_usage(self) -> tuple[int, int]:
@@ -306,7 +349,7 @@ class Agent:
         # 罢工时不给工具：模型只能说话，不能动手
         schemas = self.registry.schemas(self.active_tools) if self.persona.allow_tools else []
 
-        for step in range(1, MAX_STEPS + 1):
+        for step in range(1, self._max_steps + 1):
             # 每步都量一次：工具结果可能刚把窗口顶爆，必须在发请求前压回去
             self._enforce_context()
             self.bus.emit("thinking", step=step, model=self.model_id)
@@ -384,7 +427,7 @@ class Agent:
                     }
                 )
 
-        return f"（已达 {MAX_STEPS} 步上限，停止。可以 /reset 后给更具体的指令）"
+        return f"（已达 {self._max_steps} 步上限，停止。可以 /reset 后给更具体的指令，或调高步数上限）"
 
     # ---------- 日志 ----------
 
