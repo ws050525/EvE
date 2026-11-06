@@ -8,6 +8,15 @@ log_dir = "logs"
 data_dir = ".data"           # API Key 加密存放处
 model_dirs = ["models"]      # /scan 会扫描这些目录下的 *.gguf
 
+# ---------- 上下文预算 ----------
+# 本地 8192 窗口，长任务几轮就撞墙。每步请求前估算一次，超了就先摘要、再截断。
+context_tokens = 3500        # 单次请求的 prompt 预算（估算值）；填 0 = 按模型窗口自动
+keep_recent_turns = 4        # 压缩时至少保留最近几轮原文
+tool_output_chars = 6000     # 单个工具结果最多入库多少字符
+
+# ---------- work 档的边界 ----------
+work_root = "."              # 文件工具和 shell_exec 的根目录，越界一律拒绝
+
 # ---------- 推理引擎（本地模型的运行容器）----------
 
 [engines.llamacpp]
@@ -75,7 +84,7 @@ temperature = 0.2
 [modes.work]
 model = "deepseek-pro"
 system_prompt = "prompts/work.md"
-tools = ["web_search", "http_get", "fs_read", "fs_write", "shell_exec"]
+tools = ["web_search", "http_get", "fs_read", "fs_write", "fs_list", "shell_exec"]
 require_confirm = true
 max_tokens = 2048
 temperature = 0.3

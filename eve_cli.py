@@ -125,6 +125,18 @@ def main(argv: list[str] | None = None) -> int:
             status_line.show(f"调用 {data.get('name')}")
         elif ev.kind == "tool_end":
             status_line.show(f"{data.get('name')} {'完成' if data.get('ok') else '失败'}")
+        elif ev.kind == "context_compacting":
+            status_line.show(f"上下文 {data.get('tokens')} tokens，正在压缩…")
+        elif ev.kind == "context_compacted":
+            parts = []
+            if data.get("dropped_turns"):
+                parts.append(f"摘要 {data['dropped_turns']} 轮")
+            if data.get("truncated_chars"):
+                parts.append(f"截断 {data['truncated_chars']} 字符")
+            status_line.show(
+                f"上下文 {data.get('tokens_before')} → {data.get('tokens_after')} tokens"
+                + (f"（{'，'.join(parts)}）" if parts else "")
+            )
         elif ev.kind == "error":
             status_line.clear()
 
@@ -210,6 +222,9 @@ def main(argv: list[str] | None = None) -> int:
         if line == "/status":
             st = runtime.status()
             print(f"  model={st.model_id or '（未加载）'} kind={_kind_label(st.kind)} state={st.state}")
+            used, budget = agent.context_usage
+            summary = f"，摘要 {len(agent.summary)} 字符" if agent.summary else ""
+            print(f"  上下文≈{used}/{budget} tokens（{len(agent.messages) - 1} 条消息{summary}）")
             if st.base_url:
                 print(f"  base_url={st.base_url}")
             if st.pid:

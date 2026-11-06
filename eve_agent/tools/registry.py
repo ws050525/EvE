@@ -90,10 +90,14 @@ class ToolRegistry:
 def build_default_registry(cfg=None) -> ToolRegistry:
     from .builtin import register_builtin
     from .desktop import register_desktop
+    from .shell import register_shell
     from .web import register_web
+    from .workspace import register_workspace
 
     registry = ToolRegistry()
     register_builtin(registry)
     register_desktop(registry)
     register_web(registry, cfg)
+    register_workspace(registry, cfg)
+    register_shell(registry, cfg)
     return registry

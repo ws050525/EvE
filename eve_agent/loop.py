@@ -16,6 +16,12 @@ from eve_core.events import EventBus
 from eve_core.provider import ChatResult, Provider
 from eve_core.runtime import RuntimeManager
 
+from .context import (
+    SUMMARY_SYSTEM,
+    ContextPolicy,
+    compact,
+    messages_tokens,
+)
 from .persona import Persona
 from .tools.registry import ToolRegistry, build_default_registry
 
@@ -40,6 +46,7 @@ class Agent:
         self.mode_name = mode_name or cfg.default_mode
         self.mode: ModeConfig
         self.messages: list[dict[str, Any]] = []
+        self._summary: str = ""  # 已经被压掉的早先轮次的摘要
         self._model_override: str | None = None
         self._provider: Provider | None = None
         self._provider_model_id: str = ""
@@ -76,6 +83,7 @@ class Agent:
 
         if reset or not self.messages:
             self.messages = [{"role": "system", "content": system}]
+            self._summary = ""
         else:
             self.messages[0] = {"role": "system", "content": system}
 
@@ -119,14 +127,78 @@ class Agent:
         self.bus.emit(kind, **data)
 
     def _outgoing(self) -> list[dict[str, Any]]:
-        """把人格状态临时拼进 system prompt，不改动会话本身。"""
+        """把人格状态和历史摘要临时拼进 system prompt，不改动会话本身。"""
         extra = self.persona.prompt_extra()
-        if not extra:
-            return self.messages
+        summary = getattr(self, "_summary", "")
+        head = "\n\n".join(
+            part for part in (extra, f"## 先前对话摘要\n{summary}" if summary else "") if part
+        )
         out = list(self.messages)
-        if out and out[0].get("role") == "system":
-            out[0] = {"role": "system", "content": out[0]["content"] + "\n\n" + extra}
+        if head and out and out[0].get("role") == "system":
+            out[0] = {"role": "system", "content": out[0]["content"] + "\n\n" + head}
         return out
+
+    # ---------- 上下文预算 ----------
+
+    @property
+    def context_policy(self) -> ContextPolicy:
+        """prompt 预算：配置值，再按模型真实窗口兜一次底。"""
+        model = self.cfg.model(self.model_id)
+        ctx = model.ctx or 8192
+        budget = self.cfg.context_tokens
+        if budget <= 0:  # 0 = 自动：模型窗口的七成，最多 3500
+            budget = min(3500, max(1024, ctx * 7 // 10))
+        ceiling = max(512, ctx - self.mode.max_tokens - 128)
+        return ContextPolicy(
+            max_prompt_tokens=min(budget, ceiling),
+            keep_recent_turns=max(1, self.cfg.keep_recent_turns),
+            summary_max_tokens=min(600, max(200, budget // 6)),
+        )
+
+    @property
+    def context_usage(self) -> tuple[int, int]:
+        """(当前估算 token, 预算)；给 /status 与界面用。"""
+        return messages_tokens(self._outgoing()), self.context_policy.max_prompt_tokens
+
+    @property
+    def summary(self) -> str:
+        """已经被压掉的早先轮次的摘要（空串表示还没压过）。"""
+        return self._summary
+
+    def _enforce_context(self) -> None:
+        """请求前压一次上下文。没超预算就什么都不做，所以可以每步都调。"""
+        policy = self.context_policy
+        before, _ = self.context_usage
+        if before <= policy.max_prompt_tokens:
+            return
+
+        self.bus.emit(
+            "context_compacting", tokens=before, budget=policy.max_prompt_tokens
+        )
+        self.messages, self._summary, report = compact(
+            self.messages, policy, summary=self._summary, summarize=self._summarize
+        )
+        self.bus.emit(
+            "context_compacted",
+            dropped_turns=report.dropped_turns,
+            summarized=report.summarized,
+            truncated_chars=report.truncated_chars,
+            tokens_before=report.tokens_before,
+            tokens_after=report.tokens_after,
+        )
+
+    def _summarize(self, text: str, max_tokens: int) -> str:
+        """让当前模型把老对话压成摘要。失败会抛出去，由 compact 兜底。"""
+        result = self.provider.chat(
+            [
+                {"role": "system", "content": SUMMARY_SYSTEM},
+                {"role": "user", "content": text},
+            ],
+            None,
+            max_tokens=max_tokens,
+            temperature=0.2,
+        )
+        return (result.content or "").strip()
 
     # ---------- 流式 ----------
 
@@ -184,6 +256,8 @@ class Agent:
         schemas = self.registry.schemas(self.active_tools) if self.persona.allow_tools else []
 
         for step in range(1, MAX_STEPS + 1):
+            # 每步都量一次：工具结果可能刚把窗口顶爆，必须在发请求前压回去
+            self._enforce_context()
             self.bus.emit("thinking", step=step, model=self.model_id)
 
             # 没有工具时才走流式：工具调用不适合在 MVP 里分片拼装
@@ -251,13 +325,25 @@ class Agent:
                         "role": "tool",
                         "tool_call_id": call.id,
                         "name": call.name,
-                        "content": output,
+                        "content": self._cap_tool_output(output),
                     }
                 )
 
         return f"（已达 {MAX_STEPS} 步上限，停止。可以 /reset 后给更具体的指令）"
 
     # ---------- 日志 ----------
+
+    def _cap_tool_output(self, output: str) -> str:
+        """一条工具结果最多留多少字符。
+
+        网页正文、目录列表这类东西动辄上万字，原样塞进历史会直接吃掉整个窗口，
+        之后每步都要靠截断来救。从入库处就卡住，比事后补救便宜得多。
+        """
+        limit = max(500, self.cfg.tool_output_chars)
+        if len(output) <= limit:
+            return output
+        dropped = len(output) - limit
+        return f"{output[:limit]}\n…（工具输出过长，已省略 {dropped} 字符）"
 
     def _log_action(self, name: str, args: dict[str, Any], output: str) -> None:
         """动手的事单独记一份，便于回放追责。"""

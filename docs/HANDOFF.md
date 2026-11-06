@@ -1,14 +1,16 @@
-# EVE 项目交接文档（v0.5.7）
+# EVE 项目交接文档（v0.6.0）
 
 > 给下一个对话用。读完这份就可以接着干，不需要翻聊天记录。
-> 仓库：https://github.com/ws050525/EvE （分支 `main`，最新标签 `v0.5.7`）
+> 仓库：https://github.com/ws050525/EvE （分支 `main`，最新标签 `v0.6.0`）
 
 ---
 
 ## 0. 一句话现状
 
 一个本地优先的个人 agent：**本地模型陪聊 + 操作电脑，云端模型干重活**。
-界面（PySide6）、人格、事件通道、工具调用、云端接入都已跑通；**下一步是打磨 agent 本身**。
+界面（PySide6）、人格、事件通道、工具调用、云端接入都已跑通；
+agent 的两个硬伤（上下文会爆、work 档工具是空的）在 v0.6.0 已经修掉。
+**下一步是成本可见与细节打磨。**
 
 ---
 
@@ -38,8 +40,11 @@
 # 图形界面
 & 'D:\python\python.exe' eve_gui.py
 
-# 单元测试（不需要模型）
+# 单元测试（不需要模型；4 个文件共 46 项）
 & 'D:\python\python.exe' tests\test_persona.py
+& 'D:\python\python.exe' tests\test_context.py      # 上下文裁剪与摘要
+& 'D:\python\python.exe' tests\test_workspace.py    # fs_* / shell_exec 的边界
+& 'D:\python\python.exe' tests\test_agent_loop.py   # 真配置 + 桩模型的主循环
 ```
 
 ### 开发期开关（都是环境变量）
@@ -54,6 +59,15 @@
 | `EVE_SHOT_SCREEN` | 整屏截图（主窗收起成悬浮球时用） |
 | `EVE_SHOT_ORB` | 只截悬浮球 |
 | `EVE_STATUS=1` | 强制显示 CLI 状态行（非 TTY 时） |
+
+### `config.toml` 里跟 agent 行为有关的旋钮（都在 `[app]`）
+
+| 键 | 作用 |
+| --- | --- |
+| `context_tokens` | 单次请求的 prompt 预算；填 `0` = 按模型窗口自动（七成，上限 3500） |
+| `keep_recent_turns` | 压缩上下文时至少保留最近几轮原文，默认 4 |
+| `tool_output_chars` | 单个工具结果最多入库多少字符，默认 6000 |
+| `work_root` | `fs_*` 与 `shell_exec` 的根目录，越界一律拒绝，默认项目根 |
 
 ---
 
@@ -71,11 +85,14 @@ eve_core/            核心，不含 UI 与 agent 循环
   version.py         0.5.7
 
 eve_agent/           agent 层
-  loop.py            Agent 主循环：人格注入、流式、工具调用、日志
+  loop.py            Agent 主循环：人格注入、流式、工具调用、上下文预算、日志
+  context.py         上下文预算：token 估算、按轮裁剪、滚动摘要、兜底截断
   persona.py         人格状态机：命令识别、抗议分级、颜文字节流
   tools/registry.py  工具注册表（含风险分级与确认策略）
   tools/builtin.py   app_launch、screen_capture
   tools/desktop.py   窗口枚举/激活/关闭、键鼠注入
+  tools/workspace.py fs_read / fs_write / fs_list（限制在 work_root 内）
+  tools/shell.py     shell_exec（底线黑名单 + 越界拦截）
   tools/web.py       web_search / http_get（双后端：DeepSeek API 或 Bing）
 
 eve_ui/             界面层
@@ -87,10 +104,10 @@ eve_ui/             界面层
   bridge.py          Agent 跑在 QThread，事件/确认信号桥
   theme.py           配色、字体、QSS
 
-config.toml          模型、档位、引擎
+config.toml          模型、档位、引擎、上下文预算、work_root
 prompts/             chat / desktop / work 三份 system prompt
 docs/                设计文档（见 §7）
-tests/               纯逻辑测试
+tests/               纯逻辑与集成测试（4 个文件 / 46 项，不需要模型）
 ```
 
 ---
@@ -103,7 +120,9 @@ tests/               纯逻辑测试
 4. **人格 = 硬编码底线 + 演化覆盖层（未实现）。** 底线（不动鼠标、不关机、关键处多问）永不可被生成内容覆盖。
 5. **`key_type` 一律走剪贴板粘贴**，不用 `pyautogui.write`。原因：输入法会吞掉空格和组合键（实测 `hello eve` 变 `helloeve`）。
 6. **工具确认走"子线程阻塞 + 主线程弹窗"**，结果必须**直接调 `resolve_confirm()`**，不能走信号——worker 阻塞时事件循环停摆，信号会死锁。
-7. **低风险工具不弹确认**（读窗口、搜索、抓网页）；中风险（启动程序、打字）和高风险（点击）才确认。
+7. **低风险工具不弹确认**（读窗口、搜索、抓网页）；中风险（启动程序、打字）和高风险（点击、写文件、跑命令）才确认。
+8. **上下文按轮裁，摘要只在超预算时写。** 每步请求前估算一次；system prompt 永不裁；tool 消息必须和它的 `assistant.tool_calls` 同进同出，否则请求体非法。
+9. **work 档的边界写在代码里，不写在提示词里。** `fs_*` 和 `shell_exec` 都锁在 `work_root`，shell 另有底线黑名单。提示词管不住模型幻觉，路径检查和黑名单管得住。
 
 ---
 
@@ -126,6 +145,7 @@ tests/               纯逻辑测试
 | v0.5.5 | 悬浮球（玻璃球 + 光点眼 + 进度气泡），agent 模式自动收起 |
 | v0.5.6 | 联网工具 web_search / http_get |
 | v0.5.7 | 云端接入（DeepSeek Flash/Pro）+ DeepSeek 官方 Search/Fetch 后端 |
+| v0.6.0 | 上下文预算（按轮裁剪 + 滚动摘要 + 兜底截断）；work 档工具落地（fs_read / fs_write / fs_list / shell_exec） |
 
 ### 实测数据
 
@@ -138,6 +158,7 @@ tests/               纯逻辑测试
 | 桌面自动化（开记事本→输入→全选→复制） | 6 步，约 4 秒，剪贴板验证通过 |
 | 研究任务·本地 | 5 步 / 约 7 秒，总结正确但偏教科书 |
 | 研究任务·云端 pro | 3 步 / 约 28 秒，选源更准、总结更有洞察 |
+| 上下文压缩（本地 4B） | 10194 → 471 tokens，摘要 46 字，关键事实（暗号 42）保住 |
 
 ---
 
@@ -145,18 +166,22 @@ tests/               纯逻辑测试
 
 ### 高优先级
 
-1. **上下文会爆。** `Agent.send()` 每轮把完整历史发出去，没有裁剪。本地 8192 窗口，长任务（研究任务已到 4165 tokens）很快就会撞墙。**这是当前最该修的问题。**
-2. **`work` 档的工具是空的。** `config.toml` 里写着 `fs_read` / `fs_write` / `shell_exec`，但**这三个工具根本没实现**；`Agent` 会静默过滤掉缺失工具，所以 work 档实际只有 `web_search` / `http_get`。要么实现，要么从配置里删掉。
-   （实测：已注册工具共 10 个 —— app_launch / window_list / window_focus / window_close / key_type / key_hotkey / mouse_click / screen_capture / web_search / http_get）
-3. **`app_launch` 找不到开始菜单程序。** 只查 PATH 和绝对路径，所以「打开微信」这类会失败。修法：扫 `开始菜单\Programs\*.lnk`，或走 `shell:AppsFolder`。
-4. **没有成本可见性。** 云端调用不知道花了多少钱；`usage` 已经拿到了，但没展示也没累计。
+1. **`app_launch` 找不到开始菜单程序。** 只查 PATH 和绝对路径，所以「打开微信」这类会失败。修法：扫 `开始菜单\Programs\*.lnk`，或走 `shell:AppsFolder`。
+2. **没有成本可见性。** 云端调用不知道花了多少钱；`usage` 已经拿到了，但没展示也没累计。
 
 ### 中低优先级
 
-5. 悬浮球气泡偶尔报 `QWindowsWindow::setGeometry` 警告（布局高度与请求不符），纯观感。
-6. 悬浮球拖动没有边缘吸附。
-7. 工具调用行只显示摘要，点不开详情。
-8. 流式只在**无工具**的档位生效（工具调用参数分片拼装故意没做）。
+3. 悬浮球气泡偶尔报 `QWindowsWindow::setGeometry` 警告（布局高度与请求不符），纯观感。
+4. 悬浮球拖动没有边缘吸附。
+5. 工具调用行只显示摘要，点不开详情。
+6. 流式只在**无工具**的档位生效（工具调用参数分片拼装故意没做）。
+
+### v0.6.0 引入的已知边界（不是 bug，是取舍）
+
+7. 兜底截断会真的切 content：被切过的工具结果只剩前半段 + 一行提示，模型看不到后半段。
+8. 摘要由当前档位的模型写。本地 4B 写得糙（事实能保住，措辞一般）；云端 pro 明显更好。
+9. `fs_*` / `shell_exec` 都锁在 `work_root`（默认项目根）。要碰别处只能改配置，或让用户把文件搬进来。
+10. `shell_exec` 是 cmd 语法 + 黑名单，**不是沙箱**：黑名单挡的是关机 / 格式化 / 删盘这类不可逆操作，挡不住普通误操作。确认弹窗仍是最后一道防线。
 
 ---
 
@@ -173,27 +198,29 @@ tests/               纯逻辑测试
 
 ---
 
-## 8. 下一步：打磨 agent（用户明确指定的方向）
+## 8. 下一步：继续打磨 agent
 
-建议按这个顺序，前两项是"不做就会绊倒"的：
+排在前面的是"不做就会绊倒"的：
 
-1. **上下文裁剪 + 会话摘要**
-   保留最近 N 轮原文，更早的压成摘要；总 prompt 卡在 3500 tokens 以内（本地）。
-   这一步和 `design-memory.md` 的短期部分是同一件事。
-
-2. **补齐 work 档工具**
-   `fs_read` / `fs_write` / `fs_list` / `shell_exec`（高风险，需确认）。
-   做完 work 档才真的能"整理文档、写代码"。
-
-3. **成本与用量可见**
+1. **成本与用量可见**
    每次调用累计 prompt/completion tokens，按模型单价估算，显示在状态栏 / `/status`。
    DeepSeek 价格（每百万 tokens，空闲/高峰两档）：flash 输入 1–2 元、输出 4–8 元；
    pro 输入 4.5–9 元、输出 13.5–27 元。缓存命中的输入更便宜。
    Search / Fetch 各 5 元每 1000 次成功请求。
+   注意：流式那条路目前拿不到 usage（SSE 里没有 usage 字段），要统计得在请求里加
+   `stream_options={"include_usage": true}`，或者只统计非流式调用。
 
-4. **`app_launch` 支持开始菜单**（见 §6.3）
+2. **`app_launch` 支持开始菜单**（见 §6.1）
 
-5. 之后可选：记忆系统落地、工具详情面板、语音（两段式唤醒 + piper TTS）
+3. **工具可观测性**：工具调用行点开看完整参数/输出；流式下拼装工具调用参数分片。
+
+4. 之后可选：记忆系统落地（`design-memory.md`）、语音（两段式唤醒 + piper TTS）
+
+### v0.6.0 留下的坑（做的时候顺手看一眼）
+
+- 摘要质量依赖模型。本地 4B 写摘要能用但糙；如果以后要"高质量长期记忆"，考虑把摘要固定交给云端 flash 做，而不是当前档位模型。
+- `MIN_SUMMARY_CHARS = 8` 是一道土办法护栏（挡"复读型摘要"）。真正的问题是模型把记录里的指令当成写给它的——已经用 `【对话记录】` 框住缓解了，换模型后要重测。
+- 上下文预算的 token 估算是启发式的（CJK 1 token/字，其余 3.3 字符/token），偏保守。如果以后接 tiktoken 或 llama.cpp 的 tokenize 接口，可以换掉。
 
 ---
 
@@ -247,4 +274,4 @@ $env:PYTHONIOENCODING='utf-8'; $env:PYTHONUTF8='1'
 
 ## 11. 给下一个对话的开场白
 
-> 读 `docs/HANDOFF.md`，我们接着打磨 agent。先做上下文裁剪。
+> 读 `docs/HANDOFF.md`，我们接着打磨 agent。先做成本与用量可见（§8.1）。

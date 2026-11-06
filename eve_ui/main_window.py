@@ -462,6 +462,12 @@ class ChatWindow(QWidget):
             if self._tool_row is not None:
                 self._tool_row.set_result(ok, str(data.get("result") or ""))
                 self._tool_row = None
+        elif kind == "context_compacting":
+            self._set_state("thinking")
+            self._set_status("整理上下文…")
+        elif kind == "context_compacted":
+            after = data.get("tokens_after")
+            self._set_status(f"上下文 ≈{after} tokens" if after else "")
         elif kind == "error":
             self._set_state("error")
             self._set_status("出错了")
