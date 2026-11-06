@@ -41,4 +41,30 @@ def main(argv: list[str] | None = None) -> int:
 
         QTimer.singleShot(delay, capture)
 
+    # 开发期：整屏截图（主窗收起成悬浮球时，只能截屏幕）
+    shot_screen = os.environ.get("EVE_SHOT_SCREEN")
+    if shot_screen:
+        delay = int(os.environ.get("EVE_SHOT_DELAY", "6000"))
+
+        def capture_screen() -> None:
+            screen = app.primaryScreen()
+            if screen is not None:
+                screen.grabWindow(0).save(shot_screen)
+            app.quit()
+
+        QTimer.singleShot(delay, capture_screen)
+
+    # 开发期：单独截悬浮球（含气泡）
+    shot_orb = os.environ.get("EVE_SHOT_ORB")
+    if shot_orb:
+        delay = int(os.environ.get("EVE_SHOT_DELAY", "6000"))
+
+        def capture_orb() -> None:
+            orb = getattr(window, "_orb", None)
+            if orb is not None and orb.isVisible():
+                orb.grab().save(shot_orb)
+            app.quit()
+
+        QTimer.singleShot(delay, capture_orb)
+
     return app.exec()

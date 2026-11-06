@@ -20,6 +20,7 @@ from PySide6.QtCore import (
 )
 from PySide6.QtGui import QColor, QPainter, QPen
 from PySide6.QtWidgets import (
+    QApplication,
     QFrame,
     QGraphicsOpacityEffect,
     QHBoxLayout,
@@ -36,6 +37,7 @@ from . import theme
 from .bridge import AgentBridge
 from .chat_view import ChatView
 from .mobius import MobiusWidget
+from .orb import OrbWindow
 
 GREETING = "今天想做点什么？"
 SUBTITLE = "说句话，或者让我帮你干点活"
@@ -64,6 +66,9 @@ class ChatWindow(QWidget):
 
         self._build()
         self._bridge = AgentBridge(config_path, self, autostart=False)
+        self._orb = OrbWindow()
+        self._orb.clicked.connect(self._restore_from_orb)
+        self._orb.quit_requested.connect(self._quit_app)
         self._wire()
         self._bridge.ready.connect(lambda *_: self._bridge.preload())
         self._bridge.start()
@@ -249,6 +254,8 @@ class ChatWindow(QWidget):
         self._set_status("思考中…")
         self._set_state("thinking")
         self._bridge.ask(text)
+        if self._mode == "desktop":
+            QTimer.singleShot(150, self._collapse_to_orb)
 
     def _use_chip(self, text: str) -> None:
         if self._busy:
@@ -423,6 +430,7 @@ class ChatWindow(QWidget):
         self._modes = list(modes)
 
     def _on_event(self, kind: str, data: dict) -> None:
+        self._mirror_to_orb(kind, data)
         if kind == "engine_starting":
             self._set_state("boot")
             self._set_status("加载模型…")
@@ -457,6 +465,10 @@ class ChatWindow(QWidget):
             self._set_status("出错了")
 
     def _on_replied(self, text: str) -> None:
+        if self._orb.isVisible():
+            self._orb.set_state("happy")
+            summary = text.strip().replace("\n", " ")
+            self._orb.bubble("完成", summary[:40])
         if self._streaming:
             self.chat.end_stream(text)
             self._streaming = False
@@ -472,6 +484,55 @@ class ChatWindow(QWidget):
         self.chat.add_message("system", message)
         self._set_status("")
         self._set_busy(False)
+
+    # ---------- 悬浮球 ----------
+
+    def _collapse_to_orb(self) -> None:
+        """agent 干活时收起主窗，只留一个球在桌面上。"""
+        if self._orb.isVisible():
+            return
+        self.hide()
+        self._orb.set_state("thinking")
+        self._orb.show_at_edge()
+        self._orb.bubble("开始执行", "点我回到主窗口")
+
+    def _restore_from_orb(self) -> None:
+        self._orb.hide()
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def _quit_app(self) -> None:
+        self._orb.hide()
+        self.shutdown_agent()
+        app = QApplication.instance()
+        if app is not None:
+            app.quit()
+
+    @staticmethod
+    def _short_args(args: dict | None) -> str:
+        if not args:
+            return ""
+        text = "，".join(f"{k}={v}" for k, v in args.items())
+        return text if len(text) <= 40 else text[:40] + "…"
+
+    def _mirror_to_orb(self, kind: str, data: dict) -> None:
+        if not self._orb.isVisible():
+            return
+        if kind in ("thinking", "reply_chunk"):
+            self._orb.set_state("thinking")
+        elif kind == "tool_start":
+            self._orb.set_state("acting")
+            self._orb.bubble(f"正在 {data.get('name')}", self._short_args(data.get("args")))
+        elif kind == "tool_end":
+            ok = bool(data.get("ok"))
+            self._orb.set_state("happy" if ok else "error")
+            self._orb.bubble("这步完成" if ok else "这步失败了")
+        elif kind == "error":
+            self._orb.set_state("error")
+            self._orb.bubble("出错了")
+        elif kind == "engine_ready":
+            self._orb.set_state("idle")
 
     # ---------- 窗口 ----------
 

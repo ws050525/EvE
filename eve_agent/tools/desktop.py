@@ -157,8 +157,20 @@ def _require_pyautogui():
     return pyautogui
 
 
-def _paste_text(text: str) -> None:
-    """中文无法用 pyautogui.write 直接输入，走剪贴板 + Ctrl+V。"""
+def _clipboard_get() -> str | None:
+    import tkinter as tk
+
+    root = tk.Tk()
+    root.withdraw()
+    try:
+        return root.clipboard_get()
+    except Exception:
+        return None
+    finally:
+        root.destroy()
+
+
+def _clipboard_set(text: str) -> None:
     import tkinter as tk
 
     root = tk.Tk()
@@ -171,17 +183,30 @@ def _paste_text(text: str) -> None:
 
 
 def key_type(args: dict[str, Any]) -> str:
+    """输入文本。
+
+    一律走"剪贴板 + Ctrl+V"，不用 pyautogui.write。原因很实在：
+    中文输入法处于激活状态时，合成按键会被 IME 吃掉——实测输入 "hello eve"
+    变成了 "helloeve"，空格被当成选词键吞掉了。粘贴绕开整个 IME。
+    代价是会临时占用剪贴板，所以前后各做一次保存/恢复。
+    """
     text = str(args.get("text", ""))
     if not text:
         return "[error] 缺少 text"
 
     gui = _require_pyautogui()
-    if text.isascii():
-        gui.write(text, interval=0.01)
-    else:
-        _paste_text(text)
-        time.sleep(0.1)
+    saved = _clipboard_get()
+    try:
+        _clipboard_set(text)
+        time.sleep(0.08)
         gui.hotkey("ctrl", "v")
+        time.sleep(0.15)  # 等目标应用真正读完剪贴板
+    finally:
+        if saved is not None:
+            try:
+                _clipboard_set(saved)
+            except Exception:
+                pass
     return f"[ok] 已输入 {len(text)} 个字符"
 
 
