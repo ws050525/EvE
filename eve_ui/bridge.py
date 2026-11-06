@@ -21,6 +21,27 @@ from PySide6.QtCore import QObject, QThread, Signal, Slot
 from eve_agent import Agent
 from eve_core.config import load_config
 from eve_core.events import EventBus
+from eve_core.pricing import price_for
+
+
+def model_rows(cfg, active_model_id: str) -> list[dict]:
+    """给界面用的模型清单：本地排前面，带单价，标出当前那个。"""
+    rows: list[dict] = []
+    for model_id, model in cfg.models.items():
+        price = price_for(model)
+        rows.append(
+            {
+                "id": model_id,
+                "label": model.label,
+                "kind": model.detect_kind(),
+                "price_in": price.input,
+                "price_out": price.output,
+                "free": price.free,
+                "active": model_id == active_model_id,
+            }
+        )
+    rows.sort(key=lambda row: (row["kind"] != "local_gguf", row["id"]))
+    return rows
 
 
 class AgentWorker(QObject):
@@ -31,6 +52,7 @@ class AgentWorker(QObject):
     confirm_required = Signal(str, dict)   # 工具名、参数
     mode_changed = Signal(str, str)        # mode, model_id
     modes_ready = Signal(list)
+    models_ready = Signal(list)            # [{id,label,kind,price_in,price_out,active}]
     finished = Signal()
 
     def __init__(self, config_path: str | None = None):
@@ -48,6 +70,7 @@ class AgentWorker(QObject):
             bus.subscribe(self._on_event)
             self._agent = Agent(cfg, cfg.default_mode, bus=bus)
             self.modes_ready.emit(sorted(cfg.modes))
+            self.models_ready.emit(model_rows(cfg, self._agent.model_id))
             self.ready.emit(self._agent.model_id, cfg.model(self._agent.model_id).label)
         except Exception as exc:  # 配置错误也要让界面显示出来
             self.failed.emit(str(exc))
@@ -104,6 +127,7 @@ class AgentWorker(QObject):
         try:
             self._agent.switch_mode(mode_name)
             self.mode_changed.emit(self._agent.mode_name, self._agent.model_id)
+            self.models_ready.emit(model_rows(self._agent.cfg, self._agent.model_id))
             self.ready.emit(
                 self._agent.model_id, self._agent.cfg.model(self._agent.model_id).label
             )
@@ -117,6 +141,7 @@ class AgentWorker(QObject):
             return
         try:
             self._agent.switch_model(model_id)
+            self.models_ready.emit(model_rows(self._agent.cfg, self._agent.model_id))
             self.ready.emit(
                 self._agent.model_id, self._agent.cfg.model(self._agent.model_id).label
             )
@@ -144,6 +169,7 @@ class AgentBridge(QObject):
     confirm_required = Signal(str, dict)
     mode_changed = Signal(str, str)
     modes_ready = Signal(list)
+    models_ready = Signal(list)
 
     ask_requested = Signal(str)
     mode_requested = Signal(str)
@@ -171,6 +197,7 @@ class AgentBridge(QObject):
         self._worker.confirm_required.connect(self.confirm_required)
         self._worker.mode_changed.connect(self.mode_changed)
         self._worker.modes_ready.connect(self.modes_ready)
+        self._worker.models_ready.connect(self.models_ready)
 
         if autostart:
             self.start()

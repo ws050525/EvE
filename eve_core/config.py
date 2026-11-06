@@ -33,6 +33,7 @@ class ProviderConfig:
     api_key_env: str = ""
     timeout: float = 300.0
     enabled: bool = True
+    stream_usage: bool = False  # 云端支持 stream_options.include_usage；本地引擎不一定
 
     def resolved_key(self) -> str:
         if self.api_key_env:
@@ -62,6 +63,10 @@ class ModelConfig:
     model: str = ""
     api_key_env: str = ""
     api_key_ref: str = ""  # 密钥在 KeyStore 里挂哪个 id，留空就用模型 id
+    # 单价，单位「元 / 百万 tokens」。本地模型留 0 表示不计费。
+    price_in: float = 0.0
+    price_out: float = 0.0
+    price_cached_in: float = 0.0  # 命中缓存的输入价；<=0 表示按 price_in 算
 
     def detect_kind(self) -> str:
         if self.kind:

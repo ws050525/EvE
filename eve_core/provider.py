@@ -10,7 +10,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 from .config import ConfigError, ProviderConfig
 
@@ -143,11 +143,16 @@ class OpenAICompatProvider:
         *,
         max_tokens: int = 512,
         temperature: float = 0.7,
+        on_usage: Callable[[dict[str, Any]], None] | None = None,
     ):
         """SSE 流式，逐段吐出文本。
 
         只走文本路径：工具调用的参数是分片到达的，拼装逻辑复杂且容易错，
         所以带工具的档位仍然使用 chat()。
+
+        `on_usage` 会在收到 usage 块时被调用一次。流式默认不返回 usage，
+        要显式请求（stream_options.include_usage），而本地引擎不一定认这个字段，
+        所以由 ProviderConfig.stream_usage 决定开不开。
         """
         payload: dict[str, Any] = {
             "model": self.model,
@@ -158,6 +163,8 @@ class OpenAICompatProvider:
         }
         if tools:
             payload["tools"] = tools
+        if self.cfg.stream_usage:
+            payload["stream_options"] = {"include_usage": True}
 
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(
@@ -171,15 +178,28 @@ class OpenAICompatProvider:
             },
         )
 
+        def open_stream() -> Any:
+            try:
+                return urllib.request.urlopen(req, timeout=self.cfg.timeout)
+            except urllib.error.HTTPError as exc:
+                detail = exc.read().decode("utf-8", "replace")[:600]
+                raise ProviderError(f"{self.name}: HTTP {exc.code} — {detail}") from exc
+            except urllib.error.URLError as exc:
+                raise ProviderError(
+                    f"{self.name}: 连不上 {self.cfg.base_url}（{exc.reason}）"
+                ) from exc
+
         try:
-            response = urllib.request.urlopen(req, timeout=self.cfg.timeout)
-        except urllib.error.HTTPError as exc:
-            detail = exc.read().decode("utf-8", "replace")[:600]
-            raise ProviderError(f"{self.name}: HTTP {exc.code} — {detail}") from exc
-        except urllib.error.URLError as exc:
-            raise ProviderError(
-                f"{self.name}: 连不上 {self.cfg.base_url}（{exc.reason}）"
-            ) from exc
+            response = open_stream()
+        except ProviderError as exc:
+            # 老的 llama.cpp 不认 stream_options 会直接 400；丢了这个字段再试一次。
+            # 少拿一份 usage 总比整轮对话失败强。
+            if "stream_options" not in payload or "HTTP 400" not in str(exc):
+                raise
+            payload.pop("stream_options", None)
+            body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+            req.data = body
+            response = open_stream()
 
         with response:
             for raw in response:
@@ -193,6 +213,9 @@ class OpenAICompatProvider:
                     obj = json.loads(data)
                 except json.JSONDecodeError:
                     continue
+                usage = obj.get("usage")
+                if usage and on_usage is not None:
+                    on_usage(usage)
                 for choice in obj.get("choices") or []:
                     delta = choice.get("delta") or {}
                     piece = delta.get("content")

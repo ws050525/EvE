@@ -13,6 +13,7 @@ import sys
 from eve_agent import Agent
 from eve_core.catalog import scan
 from eve_core.config import ConfigError, load_config
+from eve_core.pricing import format_money, price_for
 from eve_core.provider import ProviderError
 from eve_core.runtime import RuntimeManager
 from eve_core.version import __version__
@@ -27,7 +28,8 @@ HELP = """  /models              列出已配置的模型
   /use <id>            给当前档位换模型（保留对话上下文）
   /scan                扫描磁盘上可用的 GGUF
   /mode <name>         切换档位（会重置上下文）
-  /status              运行时状态（引擎、端口、加载耗时）
+  /status              运行时状态（引擎、端口、加载耗时、上下文）
+  /cost                本次会话的 token 用量与估算花费
   /persona             人格状态（抗议等级、连续命令数、颜文字节流）
   /stop                停止本地引擎，释放显存
    /key <id>            为云端模型保存 API Key（DPAPI 加密）
@@ -63,6 +65,36 @@ class StatusLine:
 
 def _kind_label(kind: str) -> str:
     return {"local_gguf": "本地", "cloud_api": "云端"}.get(kind, kind)
+
+
+def _price_label(cfg, model_id: str) -> str:
+    """模型单价的一行说明：本地模型写"不计费"，云端写「入 / 出」两档。"""
+    model = cfg.models.get(model_id)
+    price = price_for(model)
+    if price.free:
+        return "本机算力，不计费"
+    return (
+        f"入 {price.input:g} / 出 {price.output:g} 元每百万 tokens"
+        f"（缓存 {price.cached_rate:g}）"
+    )
+
+
+def _usage_line(agent: Agent) -> str:
+    """一次回复之后的用量小结，没拿到 usage 就返回空串。"""
+    record = agent.usage.last
+    if record is None or not record.usage:
+        return ""
+    used = record.usage
+    detail = f"入 {used.prompt} / 出 {used.completion}"
+    if used.cached:
+        detail += f" / 缓存命中 {used.cached}"
+    parts = [f"本次 {used.total} tokens（{detail}）"]
+    if record.cost > 0:
+        parts.append(format_money(record.cost))
+    session = agent.usage.totals()
+    if session.cost > 0:
+        parts.append(f"会话累计 {format_money(session.cost)}")
+    return "  · " + " · ".join(parts)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -165,6 +197,9 @@ def main(argv: list[str] | None = None) -> int:
             print(reply.strip())
         else:
             print()
+        extra = _usage_line(agent)
+        if extra:
+            print(extra)
         return 0
 
     status = runtime.status()
@@ -202,8 +237,9 @@ def main(argv: list[str] | None = None) -> int:
             active = agent.model_id
             for mid, m in sorted(cfg.models.items()):
                 mark = "*" if mid == active else " "
-                print(f"  {mark} {mid:<20} {_kind_label(m.detect_kind()):<4} {m.label}")
-            print("  （* 为当前使用；用 /use <id> 切换）")
+                print(f"  {mark} {mid:<18} {_kind_label(m.detect_kind()):<4} {m.label}")
+                print(f"      {_price_label(cfg, mid)}")
+            print("  （* 为当前使用；用 /use <id> 切换，用 /cost 看花了多少）")
             continue
         if line == "/scan":
             found = scan(cfg.model_dirs)
@@ -225,6 +261,12 @@ def main(argv: list[str] | None = None) -> int:
             used, budget = agent.context_usage
             summary = f"，摘要 {len(agent.summary)} 字符" if agent.summary else ""
             print(f"  上下文≈{used}/{budget} tokens（{len(agent.messages) - 1} 条消息{summary}）")
+            totals = agent.usage.totals()
+            if totals.calls:
+                print(
+                    f"  本次会话 {totals.usage.total} tokens（缓存命中 {totals.usage.cached}），"
+                    f"估算 {format_money(totals.cost)}"
+                )
             if st.base_url:
                 print(f"  base_url={st.base_url}")
             if st.pid:
@@ -233,6 +275,24 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"  引擎日志={st.log_path}")
             if st.error:
                 print(f"  错误={st.error}")
+            continue
+        if line == "/cost":
+            totals = agent.usage.totals()
+            if not totals.calls:
+                print("  本次会话还没调用过模型")
+                continue
+            print(f"  调用 {totals.calls} 次，共 {totals.usage.total} tokens")
+            print(f"    输入 {totals.usage.prompt}（命中缓存 {totals.usage.cached}）")
+            print(f"    输出 {totals.usage.completion}")
+            print(f"  估算花费 {format_money(totals.cost)}")
+            for mid, total in sorted(agent.usage.per_model().items()):
+                price = price_for(cfg.models.get(mid))
+                money = "不计费" if price.free else format_money(total.cost)
+                print(
+                    f"    {mid:<18} {total.calls} 次  "
+                    f"{total.usage.total} tokens  {money}"
+                )
+            print("  （单价读 config.toml，按高峰档上限估算，仅供心里有数）")
             continue
         if line == "/stop":
             runtime.shutdown()
@@ -303,6 +363,9 @@ def main(argv: list[str] | None = None) -> int:
                 print()
             else:
                 print(reply.strip())
+            extra = _usage_line(agent)
+            if extra:
+                print(extra)
         except (ProviderError, ConfigError) as exc:
             status_line.clear()
             print(f"  调用失败：{exc}")

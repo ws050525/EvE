@@ -48,6 +48,9 @@ ngl = 99
 
 # ---------- 云端模型 ----------
 # 密钥统一存在 KeyStore 的 deepseek 名下（/key deepseek），两个模型共用
+#
+# 单价单位：元 / 百万 tokens。这里填的是**高峰档上限**，宁可高估也不低估；
+# 命中缓存的输入按 10% 计。要改价只改这几行，代码不动。
 
 [models.deepseek-flash]
 label = "DeepSeek V4.1 Flash"
@@ -55,6 +58,9 @@ kind = "cloud_api"
 base_url = "https://api.deepseek.com/v1"
 model = "deepseek-flash"
 api_key_ref = "deepseek"
+price_in = 2.0               # 输入（未命中缓存）
+price_out = 8.0              # 输出
+price_cached_in = 0.2        # 输入（命中缓存）
 
 [models.deepseek-pro]
 label = "DeepSeek V4 Pro"
@@ -62,6 +68,9 @@ kind = "cloud_api"
 base_url = "https://api.deepseek.com/v1"
 model = "deepseek-v4-pro"
 api_key_ref = "deepseek"
+price_in = 9.0
+price_out = 27.0
+price_cached_in = 0.9
 
 # ---------- 档位：prompt + 工具集 + 默认用哪个模型 ----------
 

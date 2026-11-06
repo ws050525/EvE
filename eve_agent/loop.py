@@ -13,8 +13,10 @@ from typing import Any, Callable
 
 from eve_core.config import AppConfig, ModeConfig
 from eve_core.events import EventBus
+from eve_core.pricing import ModelPrice, price_for
 from eve_core.provider import ChatResult, Provider
 from eve_core.runtime import RuntimeManager
+from eve_core.usage import UsageTracker
 
 from .context import (
     SUMMARY_SYSTEM,
@@ -43,6 +45,7 @@ class Agent:
         self.runtime = runtime or RuntimeManager(cfg, on_event=self._emit_runtime)
         self.registry: ToolRegistry = build_default_registry(cfg)
         self.persona = Persona()
+        self.usage = UsageTracker()
         self.mode_name = mode_name or cfg.default_mode
         self.mode: ModeConfig
         self.messages: list[dict[str, Any]] = []
@@ -198,7 +201,49 @@ class Agent:
             max_tokens=max_tokens,
             temperature=0.2,
         )
+        # 摘要也是一次真实调用，同样要记账——不然云端账单会"看不见"这一块
+        self._record_usage(result.usage, result.latency_ms, kind="summary")
         return (result.content or "").strip()
+
+    # ---------- 用量与花费 ----------
+
+    @property
+    def price(self) -> ModelPrice:
+        return price_for(self.cfg.model(self.model_id))
+
+    def _record_usage(
+        self, usage: dict[str, Any] | None, latency_ms: int = 0, kind: str = "chat"
+    ):
+        price = self.price
+        call = self.usage.record(self.model_id, usage, price, latency_ms, kind)
+        totals = self.usage.totals()
+        self.bus.emit(
+            "usage",
+            model=self.model_id,
+            call_kind=kind,
+            prompt_tokens=call.usage.prompt,
+            completion_tokens=call.usage.completion,
+            cached_tokens=call.usage.cached,
+            cost=call.cost,
+            free=price.free,
+            currency=price.currency,
+            session_cost=totals.cost,
+            session_prompt=totals.usage.prompt,
+            session_completion=totals.usage.completion,
+        )
+        return call
+
+    def usage_summary(self) -> dict[str, Any]:
+        """会话账本，给 /cost 与状态栏用。累计跨档位保留。"""
+        totals = self.usage.totals()
+        return {
+            "cost": totals.cost,
+            "calls": totals.calls,
+            "prompt": totals.usage.prompt,
+            "completion": totals.usage.completion,
+            "cached": totals.usage.cached,
+            "per_model": self.usage.per_model(),
+        }
 
     # ---------- 流式 ----------
 
@@ -206,12 +251,14 @@ class Agent:
         """流式跑一轮；一个 token 都没吐时返回 None，让调用方回退到普通请求。"""
         started = time.perf_counter()
         parts: list[str] = []
+        captured: dict[str, Any] = {}  # 云端会在最后一个 SSE 块里给 usage
         try:
             for delta in self.provider.stream(
                 self._outgoing(),
                 None,
                 max_tokens=self.mode.max_tokens,
                 temperature=self.mode.temperature,
+                on_usage=captured.update,
             ):
                 parts.append(delta)
                 self.bus.emit("reply_chunk", text=delta)
@@ -229,11 +276,15 @@ class Agent:
         self._log(
             ChatResult(content=raw, model=self.model_id, latency_ms=latency_ms), step, user_text
         )
+        call = self._record_usage(captured, latency_ms)
         self.bus.emit(
             "reply_done",
             text=final,
             latency_ms=latency_ms,
-            usage={},
+            usage=captured,
+            cost=call.cost,
+            session_cost=self.usage.session_cost,
+            free=self.price.free,
             model=self.model_id,
         )
         return final
@@ -277,6 +328,7 @@ class Agent:
                 self.bus.emit("error", message=str(exc), step=step)
                 raise
             self._log(result, step, text)
+            call = self._record_usage(result.usage, result.latency_ms)
 
             if not result.tool_calls:
                 self.messages.append({"role": "assistant", "content": result.content})
@@ -286,6 +338,9 @@ class Agent:
                     text=final,
                     latency_ms=result.latency_ms,
                     usage=result.usage,
+                    cost=call.cost,
+                    session_cost=self.usage.session_cost,
+                    free=self.price.free,
                     model=result.model or self.model_id,
                 )
                 return final

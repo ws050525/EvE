@@ -38,6 +38,7 @@ from .bridge import AgentBridge
 from .chat_view import ChatView
 from .mobius import MobiusWidget
 from .orb import OrbWindow
+from eve_core.pricing import format_money
 
 GREETING = "今天想做点什么？"
 SUBTITLE = "说句话，或者让我帮你干点活"
@@ -60,9 +61,13 @@ class ChatWindow(QWidget):
         self._started_chat = False
         self._streaming = False
         self._modes: list[str] = []
+        self._models: list[dict] = []
         self._mode = "chat"
         self._switching = False
         self._tool_row = None
+        self._last_usage: dict = {}
+        self._last_latency = 0
+        self._session_cost = 0.0
 
         self._build()
         self._bridge = AgentBridge(config_path, self, autostart=False)
@@ -149,12 +154,25 @@ class ChatWindow(QWidget):
         layout.addWidget(self.mode_chip, 0, Qt.AlignVCenter)
         layout.addSpacing(4)
 
-        self.model_label = QLabel("", bar)
+        self.model_label = QPushButton("", bar)
+        self.model_label.setCursor(Qt.PointingHandCursor)
+        self.model_label.setToolTip("点这里换模型")
+        self.model_label.setFlat(True)
         self.model_label.setStyleSheet(
-            f"color: {theme.TEXT2}; font-family: {theme.FONT_STACK}; font-size: 11px;"
-            " padding-right: 4px;"
+            f"QPushButton {{ background: transparent; border: none; color: {theme.TEXT2};"
+            f" font-family: {theme.FONT_STACK}; font-size: 11px; padding: 0 4px; }}"
+            f" QPushButton:hover {{ color: {theme.TEXT0}; }}"
         )
-        layout.addWidget(self.model_label)
+        self.model_label.clicked.connect(self._open_model_menu)
+        layout.addWidget(self.model_label, 0, Qt.AlignVCenter)
+
+        self.cost_label = QLabel("", bar)
+        self.cost_label.setToolTip("本次会话累计估算花费（本地模型不计费）")
+        self.cost_label.setStyleSheet(
+            f"color: {theme.TEXT2}; font-family: {theme.FONT_STACK}; font-size: 11px;"
+            " padding-right: 6px;"
+        )
+        layout.addWidget(self.cost_label)
 
         for text, slot in (("—", self.showMinimized), ("×", self.close)):
             btn = QPushButton(text, bar)
@@ -236,6 +254,7 @@ class ChatWindow(QWidget):
         self._bridge.failed.connect(self._on_failed)
         self._bridge.mode_changed.connect(self._on_mode_changed)
         self._bridge.modes_ready.connect(self._on_modes_ready)
+        self._bridge.models_ready.connect(self._on_models_ready)
         self._bridge.confirm_required.connect(self._on_confirm_required)
 
     # ---------- 交互 ----------
@@ -294,6 +313,94 @@ class ChatWindow(QWidget):
         # 不清空对话：切断上下文的是 agent，界面没必要把用户刚说的话抹掉
         if self._started_chat:
             self.chat.add_note(f"已切换到 {mode} 档 · {model_id}（上下文已重置）")
+
+    # ---------- 模型 ----------
+
+    def _on_models_ready(self, rows: list) -> None:
+        self._models = list(rows)
+
+    def _open_model_menu(self) -> None:
+        if self._busy:
+            self._set_status("这轮跑完再换模型…")
+            return
+        menu = self._build_model_menu()
+        menu.exec(self.model_label.mapToGlobal(QPoint(0, self.model_label.height() + 4)))
+
+    def _build_model_menu(self) -> QMenu:
+        """把菜单拼出来但不弹——这样它可以在没有事件循环的地方被检查。"""
+        menu = QMenu(self)
+        menu.setStyleSheet(theme.MENU_QSS)
+
+        if not self._models:
+            hint = menu.addAction("（模型清单还没就绪）")
+            hint.setEnabled(False)
+        else:
+            group = ""
+            for row in self._models:
+                label = "本地" if row["kind"] == "local_gguf" else "云端"
+                if label != group and group:
+                    menu.addSeparator()
+                group = label
+                if row["free"]:
+                    suffix = "不计费（本机）"
+                else:
+                    suffix = f"¥{row['price_in']:g} / ¥{row['price_out']:g} 每百万"
+                action = menu.addAction(f"{row['id']}   {label} · {suffix}")
+                action.setCheckable(True)
+                action.setChecked(bool(row["active"]))
+                action.triggered.connect(
+                    lambda _=False, mid=row["id"]: self._switch_model(mid)
+                )
+
+        menu.addSeparator()
+        menu.addAction("切换档位…").triggered.connect(self._open_mode_menu)
+        menu.addAction("查看本次花费").triggered.connect(self._show_cost)
+        return menu
+
+    def _switch_model(self, model_id: str) -> None:
+        if self._busy:
+            return
+        self._set_status(f"切换到 {model_id}…")
+        self._bridge.set_model(model_id)
+
+    def _show_cost(self) -> None:
+        usage = self._last_usage
+        if not usage:
+            self._set_status("本次会话还没调用过模型")
+            return
+        prompt = int(usage.get("session_prompt") or 0)
+        completion = int(usage.get("session_completion") or 0)
+        cost = float(usage.get("session_cost") or 0)
+        text = f"会话 {prompt + completion} tokens（入 {prompt} / 出 {completion}）"
+        text += f" · {format_money(cost)}" if cost > 0 else " · 本地模型不计费"
+        self._set_status(text)
+
+    def _update_cost(self, data: dict) -> None:
+        self._last_usage = dict(data)
+        if data.get("call_kind") == "summary":
+            return  # 摘要的用量只进累计，不代表"这一次回答"
+        self._session_cost = float(data.get("session_cost") or 0)
+        self.cost_label.setText(
+            format_money(self._session_cost) if self._session_cost > 0 else ""
+        )
+
+    def _metrics_text(self) -> str:
+        """状态栏那行小字：耗时 · token · 花费。"""
+        usage = self._last_usage
+        if not usage:
+            return ""
+        total = int(usage.get("prompt_tokens") or 0) + int(
+            usage.get("completion_tokens") or 0
+        )
+        bits: list[str] = []
+        if self._last_latency:
+            bits.append(f"{self._last_latency / 1000:.1f}s")
+        if total:
+            bits.append(f"{total} tokens")
+        cost = float(usage.get("cost") or 0)
+        if cost > 0:
+            bits.append(format_money(cost))
+        return "  ·  ".join(bits)
 
     # ---------- 工具确认 ----------
 
@@ -468,6 +575,10 @@ class ChatWindow(QWidget):
         elif kind == "context_compacted":
             after = data.get("tokens_after")
             self._set_status(f"上下文 ≈{after} tokens" if after else "")
+        elif kind == "usage":
+            self._update_cost(data)
+        elif kind == "reply_done":
+            self._last_latency = int(data.get("latency_ms") or 0)
         elif kind == "error":
             self._set_state("error")
             self._set_status("出错了")
@@ -483,7 +594,7 @@ class ChatWindow(QWidget):
         else:
             self.chat.add_message("assistant", text)
         self._set_state("idle")
-        self._set_status("")
+        self._set_status(self._metrics_text())
         self._set_busy(False)
 
     def _on_failed(self, message: str) -> None:

@@ -26,7 +26,7 @@ def case(fn):
 
 
 class StubProvider:
-    """冒充模型：chat() 只用来接摘要请求。"""
+    """冒充模型：chat() 供摘要与带工具的档位用，stream() 供无工具档位用。"""
 
     name = "stub"
     model = "stub"
@@ -41,9 +41,18 @@ class StubProvider:
         return ChatResult(
             content="（摘要）用户在打磨 EVE 的 agent。",
             model="stub",
-            usage={"prompt_tokens": 10, "completion_tokens": 5},
+            usage={"prompt_tokens": 1000, "completion_tokens": 100},
             latency_ms=1,
         )
+
+    def stream(self, messages, tools=None, *, max_tokens=512, temperature=0.7, on_usage=None):
+        self.calls.append((messages, tools, max_tokens))
+        if on_usage is not None:
+            on_usage(
+                {"prompt_tokens": 500, "completion_tokens": 50, "prompt_cache_hit_tokens": 200}
+            )
+        yield "好的"
+        yield "呀"
 
 
 def _agent(mode: str = "chat", **overrides) -> Agent:
@@ -129,6 +138,66 @@ def tool_output_is_capped_on_ingest():
     assert len(capped) < 1200, len(capped)
     assert "省略" in capped
     assert agent._cap_tool_output("short") == "short"
+
+
+@case
+def streaming_tier_records_usage():
+    agent = _agent("chat")  # chat 档没有工具 → 走流式
+    events = []
+    agent.bus.subscribe(lambda ev: events.append(ev.kind))
+    reply = agent.send("你好")
+    assert reply
+
+    last = agent.usage.last
+    assert last is not None, "流式也要记账"
+    assert last.usage.prompt == 500 and last.usage.cached == 200, last
+    assert "usage" in events and "reply_done" in events, events
+    assert agent.usage.totals().calls == 1
+
+
+@case
+def cloud_cost_matches_config_price():
+    agent = _agent("work")  # deepseek-pro：入 9 / 出 27 元每百万
+    agent.send("帮我看看这个文件")
+
+    totals = agent.usage.totals()
+    assert totals.calls == 1, totals
+    expected = (1000 * 9.0 + 100 * 27.0) / 1_000_000
+    assert abs(totals.cost - expected) < 1e-9, (totals.cost, expected)
+
+
+@case
+def local_model_is_free():
+    agent = _agent("desktop")  # 本地模型 + 有工具 → 走 chat()
+    agent.send("列一下窗口")
+    assert agent.usage.totals().calls == 1
+    assert agent.usage.session_cost == 0.0, agent.usage.session_cost
+
+
+@case
+def usage_survives_mode_switch():
+    agent = _agent("chat")
+    agent.send("你好")
+    before = agent.usage.totals().calls
+    agent.switch_mode("work")
+    assert agent.usage.totals().calls == before, "切档不该清空账本"
+
+
+@case
+def model_rows_flag_prices_and_active():
+    from eve_ui.bridge import model_rows
+
+    cfg = load_config()
+    rows = model_rows(cfg, "deepseek-flash")
+    ids = [row["id"] for row in rows]
+    assert ids.index("qwen3vl-4b") < ids.index("deepseek-flash"), f"本地应排前面：{ids}"
+
+    flash = next(row for row in rows if row["id"] == "deepseek-flash")
+    assert flash["active"] and not flash["free"], flash
+    assert flash["price_in"] == 2.0 and flash["price_out"] == 8.0, flash
+
+    local = next(row for row in rows if row["id"] == "qwen3vl-4b")
+    assert local["free"] and not local["active"], local
 
 
 def main() -> int:

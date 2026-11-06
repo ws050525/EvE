@@ -255,6 +255,7 @@ class RuntimeManager:
             base_url=base_url,
             model=model.id,
             api_key="local-no-auth",
+            stream_usage=True,  # 实测 llama.cpp 支持 include_usage，还带缓存命中数
         )
 
     def _connect_cloud(self, model: ModelConfig) -> ProviderConfig:
@@ -277,6 +278,7 @@ class RuntimeManager:
             base_url=model.base_url,
             model=model.model or model.id,
             api_key=api_key,
+            stream_usage=True,  # 云端认 stream_options，能拿到流式的 usage
         )
 
     # ---------- 生命周期 ----------
