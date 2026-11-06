@@ -110,6 +110,19 @@ class AgentWorker(QObject):
         except Exception as exc:
             self.failed.emit(str(exc))
 
+    @Slot(str)
+    def set_model(self, model_id: str) -> None:
+        """换模型但保留档位（云端测试用）。"""
+        if self._agent is None:
+            return
+        try:
+            self._agent.switch_model(model_id)
+            self.ready.emit(
+                self._agent.model_id, self._agent.cfg.model(self._agent.model_id).label
+            )
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
     @Slot()
     def shutdown(self) -> None:
         if self._agent is not None:
@@ -134,6 +147,7 @@ class AgentBridge(QObject):
 
     ask_requested = Signal(str)
     mode_requested = Signal(str)
+    model_requested = Signal(str)
     preload_requested = Signal()
     shutdown_requested = Signal()
 
@@ -146,6 +160,7 @@ class AgentBridge(QObject):
         self._thread.started.connect(self._worker.start)
         self.ask_requested.connect(self._worker.ask)
         self.mode_requested.connect(self._worker.set_mode)
+        self.model_requested.connect(self._worker.set_model)
         self.preload_requested.connect(self._worker.preload)
         self.shutdown_requested.connect(self._worker.shutdown)
 
@@ -174,6 +189,9 @@ class AgentBridge(QObject):
 
     def set_mode(self, mode: str) -> None:
         self.mode_requested.emit(mode)
+
+    def set_model(self, model_id: str) -> None:
+        self.model_requested.emit(model_id)
 
     def answer_confirm(self, allowed: bool) -> None:
         # 直接调用，不经信号——worker 正阻塞着等这个结果

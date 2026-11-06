@@ -73,7 +73,8 @@ class ToolRegistry:
         if spec is None:
             return f"[error] 不存在工具 '{name}'"
 
-        needs_ok = require_confirm or spec.risk == "high"
+        # 低风险工具（读窗口、读网页）不打断人；中高风险才确认
+        needs_ok = spec.risk == "high" or (require_confirm and spec.risk != "low")
         if needs_ok:
             if confirm is None:
                 return f"[denied] 工具 '{name}' 需要用户确认，但当前是非交互模式"
@@ -89,8 +90,10 @@ class ToolRegistry:
 def build_default_registry() -> ToolRegistry:
     from .builtin import register_builtin
     from .desktop import register_desktop
+    from .web import register_web
 
     registry = ToolRegistry()
     register_builtin(registry)
     register_desktop(registry)
+    register_web(registry)
     return registry

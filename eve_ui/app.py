@@ -20,6 +20,11 @@ def main(argv: list[str] | None = None) -> int:
     window.show()
     app.aboutToQuit.connect(window.shutdown_agent)
 
+    model = os.environ.get("EVE_MODEL")
+    if model:
+        delay = int(os.environ.get("EVE_MODEL_DELAY", "6000"))
+        QTimer.singleShot(delay, lambda: window._bridge.set_model(model))
+
     mode = os.environ.get("EVE_MODE")
     if mode:
         delay = int(os.environ.get("EVE_MODE_DELAY", "1200"))

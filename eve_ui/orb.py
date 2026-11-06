@@ -39,6 +39,7 @@ class BubbleWindow(QWidget):
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
 
         self.title = QLabel("", self)
+        self.title.setMaximumWidth(200)
         self.title.setStyleSheet(
             f"color: {theme.TEXT0}; font-family: {theme.FONT_STACK}; font-size: 12px;"
         )
@@ -54,7 +55,6 @@ class BubbleWindow(QWidget):
         layout.setSpacing(2)
         layout.addWidget(self.title)
         layout.addWidget(self.detail)
-        self.setFixedWidth(240)
 
         self._hide_timer = QTimer(self)
         self._hide_timer.setSingleShot(True)
@@ -72,7 +72,6 @@ class BubbleWindow(QWidget):
         self.title.setText(title)
         self.detail.setText(detail)
         self.detail.setVisible(bool(detail))
-        self.setFixedWidth(240)
         self.adjustSize()
         if anchor is not None:
             geo = anchor.frameGeometry()

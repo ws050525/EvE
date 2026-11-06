@@ -121,7 +121,8 @@ model = "qwen3vl-4b"         # 档位只绑模型 id，不绑类型
 - [x] v0.5.3 空态到对话的过渡：莫比乌斯飞入顶栏 + 交叉淡入
 - [x] v0.5.4 agent 接线：档位切换菜单、工具确认弹窗、工具调用可视化
 - [x] v0.5.5 悬浮球：玻璃球 + 光点眼 + 气泡汇报；agent 模式自动收起主窗
-- [ ] v0.5.6 模型面板：选 GGUF / 切云端 / 存 key
+- [x] v0.5.6 联网工具：web_search（Bing RSS）与 http_get（正文抽取）
+- [ ] v0.5.7 模型面板：选 GGUF / 切云端 / 存 key
 - [ ] v0.6 语音：两段式唤醒 + ASR + piper TTS
 - [ ] v0.7 打包：PyInstaller spec + 首次运行向导
 
