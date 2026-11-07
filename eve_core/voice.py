@@ -155,6 +155,7 @@ class VoiceSettings:
     tts_volume: float = 1.0
     tts_noise_scale: float = 0.667  # 语气起伏，越大越"有感情"，太高会沙哑
     tts_noise_scale_w: float = 0.8  # 停顿长短的随机性
+    tts_fx: bool = True  # 「AI 音色」后处理：轻压缩 + 提亮 + 一点空间感
 
     def wake_tokens(self) -> tuple[str, str]:
         """唤醒词的拼音 token（KWS 模型按声母+韵母建模）。"""

@@ -139,7 +139,7 @@ ASR 会把「伊芙」听成「衣服」，所以唤醒词变体里收了它。
 | --- | --- |
 | 识别 | `sherpa-onnx-paraformer-zh-small-2024-03-09`（78 MB） |
 | 唤醒 | `sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01`（33 MB） |
-| 播报 | `vits-zh-hf-theresa`（115 MB，22.05 kHz 单人女声） |
+| 播报 | `vits-melo-tts-zh_en`（170 MB，44.1 kHz 自然播报女声） |
 
 ### 换音色
 
@@ -148,11 +148,17 @@ ASR 会把「伊芙」听成「衣服」，所以唤醒词变体里收了它。
 
 | 音色 | 风格 | 采样率 |
 | --- | --- | --- |
-| `vits-zh-hf-theresa` | 德丽莎，偏软（默认） | 22.05 kHz |
+| `vits-melo-tts-zh_en` | Melo，自然播报腔（默认） | 44.1 kHz |
+| `vits-zh-hf-theresa` | 德丽莎，偏软 | 22.05 kHz |
 | `vits-zh-hf-eula` | 优菈，清冷 | 22.05 kHz |
 | `vits-zh-hf-keqing` | 刻晴，清亮 | 22.05 kHz |
 | `vits-zh-hf-fanchen-C` | 播音腔，端正 | 16 kHz |
 | `vits-zh-aishell3` | 174 个说话人，但只有 8 kHz，电话音 | 8 kHz |
+
+合成之后还有一层**「AI 音色」后处理**（`tts_fx = true`）：轻压缩收窄音量起伏、
+中高频提亮让咬字更清楚、一点短混响给你"贴耳"的空间感。
+科幻片里那种 AI 助手质感，很大一部分来自这层处理而不是嗓门本身。
+关掉就是干声：`eve_tts.py --no-fx`。
 
 下新的（镜像可用，直连 GitHub 会超时）：
 
@@ -234,6 +240,7 @@ tar.exe -xjf "models\voice\$name.tar.bz2" -C models\voice
 - [x] v0.6.2 语音播报：离线 VITS 女声（22.05 kHz），念之前洗文本；播报时暂停唤醒防自激；菜单可一键静音
 - [x] v0.6.3 播报可调：音量 / 语气起伏 / 停顿随机性进配置；`eve_tts.py` 命令行试听
 - [x] v0.6.4 音色可选：界面里「选择音色」试听切换，选择记到 `.data/voice.json`；内置四个女声
+- [x] v0.6.5 更自然的女声 + AI 音色处理：新增 melo（44.1 kHz）并设为默认；合成后加轻压缩 / 提亮 / 短混响；输出响度归一
 - [ ] v0.7 打包：PyInstaller spec + 首次运行向导
 
 ## 实测数据

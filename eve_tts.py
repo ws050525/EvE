@@ -19,7 +19,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from eve_core.config import load_config
-from eve_core.tts import PiperTts
+from eve_core.tts import PiperTts, VoiceFx
 
 
 def list_models(root: Path) -> int:
@@ -67,6 +67,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--volume", type=float, default=voice.tts_volume)
     parser.add_argument("--noise", type=float, default=voice.tts_noise_scale)
     parser.add_argument("--noise-w", type=float, default=voice.tts_noise_scale_w)
+    parser.add_argument("--fx", dest="fx", action="store_true", default=voice.tts_fx,
+                        help="开「AI 音色」后处理")
+    parser.add_argument("--no-fx", dest="fx", action="store_false", help="关后处理，听干声")
+    parser.add_argument("--clarity", type=float, default=0.30, help="提亮强度 0–0.6")
+    parser.add_argument("--space", type=float, default=0.10, help="空间感 0–0.3")
     parser.add_argument("--save", help="保存成 wav")
     parser.add_argument("--no-play", action="store_true", help="只合成不播放")
     parser.add_argument("--list", action="store_true", help="列出可用模型")
@@ -75,6 +80,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.list:
         return list_models(cfg.root)
 
+    fx = VoiceFx(
+        enabled=args.fx,
+        clarity=max(0.0, min(0.6, args.clarity)),
+        space=max(0.0, min(0.3, args.space)),
+    )
     tts = PiperTts(
         args.model,
         speed=args.speed,
@@ -82,13 +92,15 @@ def main(argv: list[str] | None = None) -> int:
         volume=args.volume,
         noise_scale=args.noise,
         noise_scale_w=args.noise_w,
+        fx=fx,
     )
     if not tts.available:
         print(f"不可用：{tts.error}")
         return 2
 
     print(f"模型 {Path(args.model).name}  语速 {tts.speed}  音量 {tts.volume}  "
-          f"起伏 {tts.noise_scale}  停顿 {tts.noise_scale_w}  说话人 {tts.speaker}")
+          f"起伏 {tts.noise_scale}  停顿 {tts.noise_scale_w}  说话人 {tts.speaker}  "
+          f"后处理 {'开' if fx.enabled else '关'}")
     print(f"文本：{args.text}")
 
     samples, rate = tts.synthesize(args.text)

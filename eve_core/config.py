@@ -291,6 +291,7 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
         tts_noise_scale_w=float(
             voice_raw.get("tts_noise_scale_w", VoiceSettings.tts_noise_scale_w)
         ),
+        tts_fx=bool(voice_raw.get("tts_fx", VoiceSettings.tts_fx)),
     )
     voice = _apply_voice_overlay(voice, data_dir)
 

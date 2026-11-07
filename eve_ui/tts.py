@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from PySide6.QtCore import QObject, QThread, Signal, Slot
 
-from eve_core.tts import PiperTts, SapiTts, TtsSettings
+from eve_core.tts import PiperTts, SapiTts, TtsSettings, VoiceFx
 
 
 class TtsWorker(QObject):
@@ -33,6 +33,7 @@ class TtsWorker(QObject):
             volume=self._settings.volume,
             noise_scale=self._settings.noise_scale,
             noise_scale_w=self._settings.noise_scale_w,
+            fx=VoiceFx(enabled=self._settings.fx),
         )
 
     def _pick_backend(self):

@@ -407,6 +407,44 @@ def missing_voice_overlay_leaves_settings_alone():
         assert loaded.tts_speaker == base.tts_speaker
 
 
+@case
+def voice_fx_changes_but_does_not_clip():
+    """后处理不能把波形搞爆，也不能改变长度。"""
+    import numpy as np
+
+    from eve_core.tts import VoiceFx, apply_voice_fx
+
+    rate = 22050
+    t = np.arange(rate) / rate
+    tone = (0.3 * np.sin(2 * np.pi * 220 * t)).astype("float32")
+
+    processed = apply_voice_fx(tone, rate, VoiceFx(enabled=True))
+    assert len(processed) == len(tone), (len(processed), len(tone))
+    assert float(np.abs(processed).max()) <= 1.0
+    assert not np.allclose(processed, tone), "处理过就该和干声有区别"
+
+
+@case
+def voice_fx_can_be_disabled():
+    import numpy as np
+
+    from eve_core.tts import VoiceFx, apply_voice_fx
+
+    tone = np.zeros(1000, dtype="float32")
+    out = apply_voice_fx(tone, 22050, VoiceFx(enabled=False))
+    assert out is tone or np.array_equal(out, tone)
+
+
+@case
+def voice_fx_survives_tiny_input():
+    import numpy as np
+
+    from eve_core.tts import VoiceFx, apply_voice_fx
+
+    out = apply_voice_fx(np.zeros(0, dtype="float32"), 22050, VoiceFx())
+    assert len(out) == 0
+
+
 def main() -> int:
     failed = 0
     for fn in CHECKS:

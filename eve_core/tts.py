@@ -1,14 +1,18 @@
 """语音播报：把回复念出来。
 
-离线方案，用 sherpa-onnx 的 VITS（piper 中文女声 zh_CN-huayan-medium）。
-选它而不是在线音色的原因：edge-tts 走微软免费端点，实测 403 被挡；
-本地合成的音质虽然不如神经网络云端音色，但稳定、不联网、不花钱。
+离线方案，用 sherpa-onnx 的 VITS 中文模型。选它而不是在线音色的原因：
+edge-tts 走微软免费端点，实测 403 被挡；本地合成稳定、不联网、不花钱。
+
+除了选嗓子，这里还有一层「AI 音色」后处理（`apply_voice_fx`）：
+轻压缩 + 提亮 + 一点空间感。科幻片里的 AI 助手那种近耳、冷静的质感，
+很大程度来自录音与处理，而不只是嗓音本身。
 
 这里只管"文本 → 声音 → 播出去"，语速、打断由上层控制。
 """
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -73,6 +77,96 @@ class TtsSettings:
     # noise_scale 越大语气起伏越明显（太高会沙哑），noise_scale_w 越大停顿长短越随机
     noise_scale: float = 0.667
     noise_scale_w: float = 0.8
+    fx: bool = True
+
+
+# ---------- 「AI 音色」后处理 ----------
+#
+# 三条链，都很轻，加起来只是让声音更"贴耳、稳、清楚"：
+#   1. 低切一点浊音、给中高频加存在感 → 吐字更清楚
+#   2. 轻压缩 → 音量起伏收窄，听感更"稳"，像录音棚里出来的
+#   3. 很短的混响 → 有空间感但不糊，接近"就在你耳边"的效果
+
+
+@dataclass
+class VoiceFx:
+    enabled: bool = True
+    warmth: float = 0.12  # 低频厚度（0–0.3）
+    clarity: float = 0.30  # 中高频存在感（0–0.6）
+    space: float = 0.10  # 空间感混入比例（0–0.3）
+    compression: float = 0.6  # 压缩强度（0–1）
+
+
+def _lowpass(x, rate: int, cutoff: float):
+    """一阶低通（用 FIR 近似单极点），够用且不改相位太多。"""
+    import numpy as np
+
+    alpha = 1.0 - math.exp(-2.0 * math.pi * cutoff / rate)
+    n = max(8, int(rate / max(cutoff, 40.0)))
+    kernel = alpha * (1.0 - alpha) ** np.arange(n)
+    kernel = kernel / (kernel.sum() + 1e-12)
+    return np.convolve(x, kernel, mode="same")
+
+
+def _compress(x, rate: int, amount: float):
+    """软压缩：超过门限的部分按比例压，整体再补一点增益。"""
+    import numpy as np
+
+    amount = max(0.0, min(1.0, amount))
+    if amount <= 0:
+        return x
+
+    envelope = _lowpass(np.abs(x), rate, 60.0)
+    threshold = 0.12
+    ratio = 1.0 + 3.0 * amount
+    gain = np.ones_like(envelope)
+    loud = envelope > threshold
+    gain[loud] = (threshold / envelope[loud]) ** (1.0 - 1.0 / ratio)
+    return x * gain
+
+
+def _reverb(x, rate: int, mix: float):
+    """短混响：合成的指数衰减噪声当脉冲响应，FFT 卷积。"""
+    import numpy as np
+
+    if mix <= 0:
+        return x
+    length = int(rate * 0.11)
+    if length < 16:
+        return x
+    rng = np.random.default_rng(7)  # 固定种子，保证每次听感一致
+    ir = rng.standard_normal(length) * np.exp(-7.0 * np.arange(length) / length)
+    ir = _lowpass(ir, rate, 3800.0)
+    ir = ir / (np.abs(ir).sum() + 1e-9)
+
+    size = len(x) + len(ir) - 1
+    spectrum = np.fft.rfft(x, size) * np.fft.rfft(ir, size)
+    wet = np.fft.irfft(spectrum, size)[: len(x)]
+    return (1.0 - mix) * x + mix * wet
+
+
+def apply_voice_fx(samples, rate: int, fx: VoiceFx | None = None):
+    """把合成出来的干声过一遍「AI 音色」处理。"""
+    import numpy as np
+
+    fx = fx or VoiceFx()
+    if not fx.enabled or samples is None or len(samples) == 0:
+        return samples
+
+    y = np.asarray(samples, dtype="float32")
+    low = _lowpass(y, rate, 220.0)
+    y = y + fx.warmth * low
+
+    high = y - _lowpass(y, rate, 3200.0)
+    y = y + fx.clarity * high
+
+    y = _compress(y, rate, fx.compression)
+    y = _reverb(y, rate, fx.space)
+
+    peak = float(np.abs(y).max())
+    if peak > 0.98:
+        y = y * (0.98 / peak)
+    return np.clip(y, -1.0, 1.0).astype("float32")
 
 
 class PiperTts:
@@ -92,6 +186,7 @@ class PiperTts:
         volume: float = 1.0,
         noise_scale: float = 0.667,
         noise_scale_w: float = 0.8,
+        fx: VoiceFx | None = None,
     ):
         self.model_dir = Path(model_dir)
         self.speed = max(0.5, min(2.0, float(speed)))
@@ -100,6 +195,7 @@ class PiperTts:
         self.volume = max(0.0, min(1.5, float(volume)))
         self.noise_scale = max(0.0, min(1.5, float(noise_scale)))
         self.noise_scale_w = max(0.0, min(1.5, float(noise_scale_w)))
+        self.fx = fx if fx is not None else VoiceFx()
         self.error = ""
         self._tts = None
 
@@ -185,9 +281,19 @@ class PiperTts:
         samples = np.asarray(audio.samples, dtype="float32")
         if samples.size == 0:
             return None, 0
+        rate = int(audio.sample_rate)
+        if self.fx is not None and self.fx.enabled:
+            samples = apply_voice_fx(samples, rate, self.fx)
+
+        # 不同模型的输出电平差很多（实测 melo 只有 0.15，theresa 有 0.69），
+        # 不归一化的话换音色会忽大忽小。
+        peak = float(np.abs(samples).max())
+        if peak > 1e-4:
+            samples = samples * (0.85 / peak)
+
         if self.volume != 1.0:
             samples = np.clip(samples * self.volume, -1.0, 1.0)
-        return samples, int(audio.sample_rate)
+        return np.clip(samples, -1.0, 1.0), rate
 
     def speak(self, text: str) -> bool:
         """合成并播完（阻塞）。调用方负责放在后台线程。"""
@@ -232,6 +338,7 @@ def list_voice_models(voice_dir: str | Path) -> list[dict]:
 
 
 _VOICE_NAMES = {
+    "vits-melo-tts-zh_en": "Melo（自然播报，44.1kHz）",
     "vits-zh-hf-eula": "优菈（清冷）",
     "vits-zh-hf-theresa": "德丽莎（偏软）",
     "vits-zh-hf-keqing": "刻晴（清亮）",
