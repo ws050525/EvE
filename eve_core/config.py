@@ -125,6 +125,7 @@ class AppConfig:
     keep_recent_turns: int = 4  # 压缩上下文时至少保留最近几轮原文
     tool_output_chars: int = 6000  # 单个工具结果最多入库多少字符
     max_steps: int = 12  # 单条消息最多走几步（工具调用来回算一步）
+    auto_confirm: bool = False  # 最高权限：所有工具（含高风险）都不再询问
     voice: "VoiceSettings" = field(default_factory=lambda: _default_voice())
 
     def model(self, model_id: str) -> ModelConfig:
@@ -310,5 +311,6 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
         keep_recent_turns=int(app.get("keep_recent_turns", 4)),
         tool_output_chars=int(app.get("tool_output_chars", 6000)),
         max_steps=max(1, int(app.get("max_steps", 12))),
+        auto_confirm=bool(app.get("auto_confirm", False)),
         voice=voice,
     )

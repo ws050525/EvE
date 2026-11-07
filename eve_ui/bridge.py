@@ -134,6 +134,19 @@ class AgentWorker(QObject):
         # 这里在子线程执行，emit 会自动排队到主线程
         self.event.emit(ev.kind, ev.data)
 
+    @Slot(bool)
+    def set_auto_confirm(self, value: bool) -> None:
+        """最高权限开关：打开后所有工具（含高风险）都不再询问。"""
+        if self._agent is None:
+            return
+        self._agent.cfg.auto_confirm = bool(value)
+        note = (
+            "已打开最高权限：读写文件、跑命令都不再询问"
+            if value
+            else "已关闭最高权限：高风险工具恢复询问"
+        )
+        self.event.emit("settings", {"message": note})
+
     # ---------- 工具确认 ----------
 
     def _confirm(self, spec, tool_args) -> bool:
@@ -290,6 +303,7 @@ class AgentBridge(QObject):
     steps_requested = Signal(int)
     key_set_requested = Signal(str, str)
     key_delete_requested = Signal(str)
+    auto_confirm_requested = Signal(bool)
     preload_requested = Signal()
     shutdown_requested = Signal()
 
@@ -307,6 +321,7 @@ class AgentBridge(QObject):
         self.steps_requested.connect(self._worker.set_max_steps)
         self.key_set_requested.connect(self._worker.set_key)
         self.key_delete_requested.connect(self._worker.delete_key)
+        self.auto_confirm_requested.connect(self._worker.set_auto_confirm)
         self.preload_requested.connect(self._worker.preload)
         self.shutdown_requested.connect(self._worker.shutdown)
 
@@ -353,6 +368,9 @@ class AgentBridge(QObject):
 
     def delete_key(self, key_id: str) -> None:
         self.key_delete_requested.emit(key_id)
+
+    def set_auto_confirm(self, value: bool) -> None:
+        self.auto_confirm_requested.emit(bool(value))
 
     def answer_confirm(self, allowed: bool) -> None:
         # 直接调用，不经信号——worker 正阻塞着等这个结果

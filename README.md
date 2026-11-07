@@ -210,6 +210,44 @@ tar.exe -xjf "models\voice\$name.tar.bz2" -C models\voice
 
 `config.toml` 里 `[voice]` 段配置模型路径、唤醒词、静音时长。
 
+## 工作模式
+
+三件事：查资料、动文件、出成品。
+
+| 能力 | 工具 |
+| --- | --- |
+| 联网查资料 | `web_search`（短关键词）→ `http_get` 读正文 |
+| 读写整理本地文件 | `fs_read` / `fs_write` / `fs_list`（限制在 `work_root`） |
+| **直接生成文档** | `office_write`：pptx / docx / xlsx，给标题 + 小节就出文件 |
+| 跑命令 | `shell_exec`（底线黑名单拦截关机、格式化、删盘） |
+| 把资料写进软件 | `app_launch(file=)` → `window_focus` → `key_type(save=true)` |
+
+`office_write` 是专门加的：以前让它"做一份 PPT"，它会把 python-pptx 的代码贴给你，
+你还得自己跑。现在它直接产出 5 页的 `.pptx`，内容是具体的（不是"待补充"）。
+
+实测（deepseek-flash，work 档）：
+
+```
+-> office_write(kind=pptx, path=.tmp/ppt-test/周报.pptx, title=本周工作汇报, ...)
+   OK 已生成 PPT：周报.pptx（5 页），路径：.tmp\ppt-test\周报.pptx（33 KB）
+-> fs_list(path=.tmp/ppt-test)  OK 1 个文件
+2 步，10813 tokens，¥0.017
+```
+
+### 最高权限
+
+模型菜单里「最高权限」打开后，**读写文件、跑命令都不再弹确认**（含高风险工具）。
+也可以写进配置常开：
+
+```toml
+[app]
+auto_confirm = true
+```
+
+默认是关的。打开后它就真的能连续干活了，代价是你不再逐条把关——建议只在
+自己的机器、明确知道它在做什么的时候开。
+
+
 ## 测试
 
 ```powershell
@@ -250,6 +288,7 @@ tar.exe -xjf "models\voice\$name.tar.bz2" -C models\voice
 - [x] v0.6.4 音色可选：界面里「选择音色」试听切换，选择记到 `.data/voice.json`；内置四个女声
 - [x] v0.6.5 更自然的女声 + AI 音色处理：新增 melo（44.1 kHz）并设为默认；合成后加轻压缩 / 提亮 / 短混响；输出响度归一
 - [x] v0.6.6 播报提速：改成逐句流式（首声 3.6s → 1.5s），默认语速 1.12（5.9 → 7.0 字/秒）
+- [x] v0.6.7 工作模式能出成品：新增 `office_write`（直接生成 pptx/docx/xlsx）；播报改成按分句切（不再说半句）+ 首尾淡入淡出；新增最高权限开关
 - [ ] v0.7 打包：PyInstaller spec + 首次运行向导
 
 ## 实测数据

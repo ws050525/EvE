@@ -427,6 +427,7 @@ class Agent:
                     allowed=set(self.active_tools),
                     confirm=confirm,
                     require_confirm=self.mode.require_confirm,
+                    auto_ok=getattr(self.cfg, "auto_confirm", False),
                 )
                 ok = not output.startswith(("[error]", "[denied]"))
                 self.bus.emit("tool_end", name=call.name, ok=ok, result=output[:200])

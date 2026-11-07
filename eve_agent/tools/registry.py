@@ -65,8 +65,12 @@ class ToolRegistry:
         allowed: set[str],
         confirm: Callable[[ToolSpec, dict[str, Any]], bool] | None = None,
         require_confirm: bool = False,
+        auto_ok: bool = False,
     ) -> str:
-        """执行工具，永远返回字符串——失败也返回文本，让模型自己看见并纠正。"""
+        """执行工具，永远返回字符串——失败也返回文本，让模型自己看见并纠正。
+
+        `auto_ok=True` 是"最高权限"开关：连高风险工具都不再询问。
+        """
         if name not in allowed:
             return f"[error] 工具 '{name}' 不在当前档位的白名单里"
         spec = self._tools.get(name)
@@ -84,7 +88,10 @@ class ToolRegistry:
             )
 
         # 低风险工具（读窗口、读网页）不打断人；中高风险才确认
-        needs_ok = spec.risk == "high" or (require_confirm and spec.risk != "low")
+        needs_ok = (
+            not auto_ok
+            and (spec.risk == "high" or (require_confirm and spec.risk != "low"))
+        )
         if needs_ok:
             if confirm is None:
                 return f"[denied] 工具 '{name}' 需要用户确认，但当前是非交互模式"
@@ -100,6 +107,7 @@ class ToolRegistry:
 def build_default_registry(cfg=None) -> ToolRegistry:
     from .builtin import register_builtin
     from .desktop import register_desktop
+    from .office import register_office
     from .shell import register_shell
     from .web import register_web
     from .workspace import register_workspace
@@ -109,5 +117,6 @@ def build_default_registry(cfg=None) -> ToolRegistry:
     register_desktop(registry)
     register_web(registry, cfg)
     register_workspace(registry, cfg)
+    register_office(registry, cfg)
     register_shell(registry, cfg)
     return registry

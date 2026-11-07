@@ -288,6 +288,56 @@ def speech_cleaning_drops_list_bullets():
     assert "打开了记事本" in cleaned and "保存了文件" in cleaned, cleaned
 
 
+# ---------- 切句 ----------
+
+
+@case
+def split_never_cuts_inside_a_phrase():
+    """播报"说一半"的根因：按字数硬切会切在词中间。现在必须落在标点上。"""
+    from eve_core.tts import split_sentences
+
+    text = "我已经帮你把文件整理好了，放在桌面上。你要是想再看一眼，我可以把改动列出来。"
+    chunks = split_sentences(text)
+    assert len(chunks) >= 2, chunks
+    assert "".join(chunks) == text, chunks
+    for chunk in chunks[:-1]:
+        assert chunk[-1] in "。！？；，、：!?;,:\n…", f"这块没在标点处断开：{chunk!r}"
+
+
+@case
+def split_keeps_each_chunk_short():
+    from eve_core.tts import split_sentences
+
+    text = "第一点很长很长很长很长很长，第二点也很长很长很长很长，第三点还是长。"
+    for chunk in split_sentences(text, max_chars=20):
+        assert len(chunk) <= 20, (len(chunk), chunk)
+
+
+@case
+def split_merges_tiny_tail():
+    from eve_core.tts import split_sentences
+
+    chunks = split_sentences("这是第一句话内容比较长一些。嗯。")
+    assert chunks[-1].endswith("嗯。"), chunks
+
+
+@case
+def split_handles_empty_and_short():
+    from eve_core.tts import split_sentences
+
+    assert split_sentences("") == []
+    assert split_sentences("好") == ["好"]
+
+
+@case
+def split_survives_text_without_punctuation():
+    from eve_core.tts import split_sentences
+
+    text = "这一句故意没有任何标点符号所以只能硬切但也不能丢字"
+    chunks = split_sentences(text)
+    assert "".join(chunks) == text, chunks
+
+
 # ---------- 播报参数 ----------
 
 

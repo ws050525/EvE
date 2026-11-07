@@ -380,7 +380,9 @@ class ChatWindow(QWidget):
         self._orb.quit_requested.connect(self._quit_app)
         self._orb.confirm_answered.connect(self._resolve_pending)
 
-        self._voice_settings, self._data_dir = self._load_voice_settings(config_path)
+        self._voice_settings, self._data_dir, self._auto_confirm = (
+            self._load_voice_settings(config_path)
+        )
         self._voice = VoiceBridge(self._voice_settings, self)
         self._voice.state_changed.connect(self._on_voice_state)
         self._voice.transcript.connect(self._on_voice_text)
@@ -663,12 +665,14 @@ class ChatWindow(QWidget):
     # ---------- 语音 ----------
 
     @staticmethod
-    def _load_voice_settings(config_path: str | None) -> tuple[VoiceSettings, Path]:
+    def _load_voice_settings(
+        config_path: str | None,
+    ) -> tuple[VoiceSettings, Path, bool]:
         try:
             cfg = load_config(config_path)
-            return cfg.voice, cfg.data_dir
+            return cfg.voice, cfg.data_dir, bool(cfg.auto_confirm)
         except Exception:
-            return VoiceSettings(), Path(".data")
+            return VoiceSettings(), Path(".data"), False
 
     def _on_voice(self) -> None:
         if self._busy:
@@ -855,9 +859,28 @@ class ChatWindow(QWidget):
         speech = menu.addAction("语音播报：开" if self._tts_enabled else "语音播报：关")
         speech.triggered.connect(self._toggle_tts)
         menu.addAction("选择音色…").triggered.connect(self._open_voice_dialog)
+        root = menu.addAction(
+            "最高权限：开（不再询问）" if self._auto_confirm else "最高权限：关"
+        )
+        root.setCheckable(True)
+        root.setChecked(self._auto_confirm)
+        root.triggered.connect(self._toggle_auto_confirm)
         menu.addAction("切换档位…").triggered.connect(self._open_mode_menu)
         menu.addAction("查看本次花费").triggered.connect(self._show_cost)
         return menu
+
+    def _toggle_auto_confirm(self) -> None:
+        """最高权限：读写文件、跑命令一律不再弹确认。"""
+        self._auto_confirm = not self._auto_confirm
+        self._bridge.set_auto_confirm(self._auto_confirm)
+        note = (
+            "最高权限已打开：接下来读写文件、跑命令都不会再问你"
+            if self._auto_confirm
+            else "最高权限已关闭：高风险操作恢复确认"
+        )
+        if self._started_chat:
+            self.chat.add_note(note)
+        self._set_status(note)
 
     def _toggle_tts(self) -> None:
         self._tts_enabled = not self._tts_enabled

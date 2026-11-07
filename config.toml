@@ -14,6 +14,7 @@ context_tokens = 0           # prompt 预算；0 = 按模型窗口自动（留�
 keep_recent_turns = 4        # 压缩时至少保留最近几轮原文
 tool_output_chars = 6000     # 单个工具结果最多入库多少字符
 max_steps = 12               # 单条消息最多走几步；之前是 6，长任务经常差一步
+auto_confirm = false         # 最高权限：所有工具（含写文件、跑命令）都不再询问
 
 # ---------- work 档的边界 ----------
 work_root = "."              # 文件工具和 shell_exec 的根目录，越界一律拒绝
@@ -120,7 +121,7 @@ temperature = 0.2
 label = "工作"
 model = "deepseek-flash"     # 默认 flash：够用且便宜；要更强就在模型菜单里临时换 pro
 system_prompt = "prompts/work.md"
-tools = ["web_search", "http_get", "fs_read", "fs_write", "fs_list", "shell_exec"]
+tools = ["web_search", "http_get", "fs_read", "fs_write", "fs_list", "office_write", "shell_exec", "app_launch", "app_list", "window_list", "window_focus", "key_type"]
 require_confirm = true
 max_tokens = 2048
 temperature = 0.3

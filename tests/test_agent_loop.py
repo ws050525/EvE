@@ -243,6 +243,49 @@ def max_steps_comes_from_config_and_is_clamped():
 
 
 @case
+def auto_confirm_skips_the_prompt():
+    """最高权限：打开后连高风险工具都不再询问。"""
+    from eve_agent.tools.registry import ToolRegistry, ToolSpec
+
+    registry = ToolRegistry()
+    calls = []
+    registry.register(
+        ToolSpec(
+            name="risky",
+            description="测试用高风险工具",
+            parameters={"type": "object", "properties": {}},
+            handler=lambda args: calls.append(1) or "[ok] 执行了",
+            risk="high",
+        )
+    )
+
+    asked = []
+
+    def confirm(spec, args):
+        asked.append(spec.name)
+        return True
+
+    ok = registry.dispatch(
+        "risky", {}, allowed={"risky"}, confirm=confirm, require_confirm=True
+    )
+    assert asked == ["risky"], asked
+    assert ok == "[ok] 执行了", ok
+
+    asked.clear()
+    auto = registry.dispatch(
+        "risky",
+        {},
+        allowed={"risky"},
+        confirm=confirm,
+        require_confirm=True,
+        auto_ok=True,
+    )
+    assert asked == [], "最高权限下不该再询问"
+    assert auto == "[ok] 执行了", auto
+    assert len(calls) == 2
+
+
+@case
 def model_rows_flag_prices_and_active():
     from eve_ui.bridge import model_rows
 

@@ -67,52 +67,57 @@ def clean_for_speech(text: str) -> str:
     return text
 
 
-_SENTENCE_SPLIT = re.compile(r"(?<=[。！？!?；;\n])")
-MIN_SENTENCE = 6  # 太短的碎片并到下一句，避免一句只有"好"单独合成
+_CLAUSE = re.compile(r"[^。！？；，、：!?;,:\n…]+[。！？；，、：!?;,:\n…]?")
+MIN_TAIL = 5  # 尾巴太短的片段并回上一块，否则最后一个字容易被念秃
 
 
 def split_sentences(text: str, max_chars: int = 34) -> list[str]:
     """把一段话切成适合逐句合成的片段。
 
-    切得越细，第一声出来得越快；但切太碎会一句一个停顿，听着像结巴。
-    所以过短的碎片合并，过长的按逗号再切一刀。
+    按**分句**切（标点处），再贪心合并到不超过 max_chars。
+    绝不在词中间下刀——之前按字数硬切，切在词里就会听到半句。
     34 字是量出来的：再长第一句就要等 2 秒以上才出声。
     """
     text = str(text or "").strip()
     if not text:
         return []
 
-    pieces = [piece.strip() for piece in _SENTENCE_SPLIT.split(text)]
-    pieces = [piece for piece in pieces if piece]
+    clauses = [m.group(0).strip() for m in _CLAUSE.finditer(text)]
+    clauses = [clause for clause in clauses if clause]
+    if not clauses:
+        return []
 
-    merged: list[str] = []
+    chunks: list[str] = []
     buffer = ""
-    for piece in pieces:
-        buffer += piece
-        if len(buffer) >= MIN_SENTENCE:
-            merged.append(buffer)
-            buffer = ""
-    if buffer:
-        if merged:
-            merged[-1] += buffer
-        else:
-            merged.append(buffer)
+    for clause in clauses:
+        if len(clause) > max_chars:
+            # 一整句没有标点、又超长：只能硬切，这已经是最后手段
+            if buffer:
+                chunks.append(buffer)
+                buffer = ""
+            while len(clause) > max_chars:
+                chunks.append(clause[:max_chars])
+                clause = clause[max_chars:]
+            buffer = clause
+            continue
 
-    result: list[str] = []
-    for piece in merged:
-        while len(piece) > max_chars:
-            cut = -1
-            for mark in ("，", ",", "、"):
-                index = piece.rfind(mark, 0, max_chars)
-                if index > cut:
-                    cut = index
-            if cut < max_chars // 3:
-                cut = max_chars
-            result.append(piece[: cut + 1])
-            piece = piece[cut + 1 :]
-        if piece.strip():
-            result.append(piece.strip())
-    return result
+        if not buffer:
+            buffer = clause
+        elif len(buffer) + len(clause) <= max_chars:
+            buffer += clause
+        else:
+            chunks.append(buffer)
+            buffer = clause
+
+    if buffer:
+        chunks.append(buffer)
+
+    # 尾巴太短就并回上一块，避免最后一块只剩两三个字
+    if len(chunks) > 1 and len(chunks[-1]) < MIN_TAIL:
+        chunks[-2] += chunks[-1]
+        chunks.pop()
+
+    return [chunk for chunk in chunks if chunk.strip()]
 
 
 @dataclass
@@ -192,6 +197,25 @@ def _reverb(x, rate: int, mix: float):
     spectrum = np.fft.rfft(x, size) * np.fft.rfft(ir, size)
     wet = np.fft.irfft(spectrum, size)[: len(x)]
     return (1.0 - mix) * x + mix * wet
+
+
+def _edge_fade(samples, rate: int, ms: float = 8.0):
+    """首尾各做几毫秒淡入淡出。
+
+    逐句播放时，每块都从非零波形突然开始/结束会有一声"咔"，
+    听感上很像被掐断。很轻的淡入淡出就够。
+    """
+    import numpy as np
+
+    y = np.asarray(samples, dtype="float32")
+    count = int(rate * ms / 1000.0)
+    if count <= 1 or len(y) < count * 2:
+        return y
+    ramp = np.linspace(0.0, 1.0, count, dtype="float32")
+    y = y.copy()
+    y[:count] *= ramp
+    y[-count:] *= ramp[::-1]
+    return y
 
 
 def apply_voice_fx(samples, rate: int, fx: VoiceFx | None = None):
@@ -342,7 +366,7 @@ class PiperTts:
 
         if self.volume != 1.0:
             samples = np.clip(samples * self.volume, -1.0, 1.0)
-        return np.clip(samples, -1.0, 1.0), rate
+        return np.clip(_edge_fade(samples, rate), -1.0, 1.0), rate
 
     def speak(self, text: str) -> bool:
         """念一段话（阻塞到播完）。调用方负责放在后台线程。
