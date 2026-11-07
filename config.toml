@@ -32,7 +32,7 @@ max_seconds = 20             # 单次录音上限
 # melo 是最自然的一个（44.1kHz 播报女声）；备选 theresa / eula / keqing / fanchen-C。
 tts_model = "models/voice/vits-melo-tts-zh_en"
 tts_enabled = true
-tts_speed = 1.0              # 0.5–2.0，大于 1 更快
+tts_speed = 1.12             # 0.5–2.0；1.0 是模型原始语速，实测偏慢
 tts_volume = 1.0             # 0–1.5
 tts_speaker = 0              # 单人模型只有一个音色
 tts_noise_scale = 0.667      # 语气起伏：调大更有感情，超过 0.9 容易沙哑

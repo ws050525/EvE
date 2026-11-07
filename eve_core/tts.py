@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import math
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -64,6 +65,54 @@ def clean_for_speech(text: str) -> str:
                 break
         text = cut.rstrip("，、 ")
     return text
+
+
+_SENTENCE_SPLIT = re.compile(r"(?<=[。！？!?；;\n])")
+MIN_SENTENCE = 6  # 太短的碎片并到下一句，避免一句只有"好"单独合成
+
+
+def split_sentences(text: str, max_chars: int = 34) -> list[str]:
+    """把一段话切成适合逐句合成的片段。
+
+    切得越细，第一声出来得越快；但切太碎会一句一个停顿，听着像结巴。
+    所以过短的碎片合并，过长的按逗号再切一刀。
+    34 字是量出来的：再长第一句就要等 2 秒以上才出声。
+    """
+    text = str(text or "").strip()
+    if not text:
+        return []
+
+    pieces = [piece.strip() for piece in _SENTENCE_SPLIT.split(text)]
+    pieces = [piece for piece in pieces if piece]
+
+    merged: list[str] = []
+    buffer = ""
+    for piece in pieces:
+        buffer += piece
+        if len(buffer) >= MIN_SENTENCE:
+            merged.append(buffer)
+            buffer = ""
+    if buffer:
+        if merged:
+            merged[-1] += buffer
+        else:
+            merged.append(buffer)
+
+    result: list[str] = []
+    for piece in merged:
+        while len(piece) > max_chars:
+            cut = -1
+            for mark in ("，", ",", "、"):
+                index = piece.rfind(mark, 0, max_chars)
+                if index > cut:
+                    cut = index
+            if cut < max_chars // 3:
+                cut = max_chars
+            result.append(piece[: cut + 1])
+            piece = piece[cut + 1 :]
+        if piece.strip():
+            result.append(piece.strip())
+    return result
 
 
 @dataclass
@@ -296,15 +345,43 @@ class PiperTts:
         return np.clip(samples, -1.0, 1.0), rate
 
     def speak(self, text: str) -> bool:
-        """合成并播完（阻塞）。调用方负责放在后台线程。"""
+        """念一段话（阻塞到播完）。调用方负责放在后台线程。
+
+        按句子切开、边合成边播：第一句合完就开始出声，后面几句在这句播完前
+        已经合成好了。整段合成再播的话，65 字的回复要先干等 3.6 秒——那才是
+        "不利索"的真正原因，不是语速慢。
+        """
+        import queue
+        import threading
+
         import sounddevice as sd
 
-        samples, rate = self.synthesize(text)
-        if samples is None:
+        sentences = split_sentences(clean_for_speech(text))
+        if not sentences:
             return False
-        sd.play(samples, rate)
-        sd.wait()
-        return True
+
+        ready: queue.Queue = queue.Queue()
+
+        def producer() -> None:
+            for sentence in sentences:
+                samples, rate = self.synthesize(sentence)
+                if samples is not None:
+                    ready.put((samples, rate))
+            ready.put(None)
+
+        threading.Thread(target=producer, daemon=True).start()
+
+        played = False
+        while True:
+            item = ready.get()
+            if item is None:
+                break
+            samples, rate = item
+            sd.play(samples, rate)
+            sd.wait()
+            played = True
+            time.sleep(0.06)  # 句间小停顿，不然像机器人一口气读完
+        return played
 
 
 def list_voice_models(voice_dir: str | Path) -> list[dict]:
