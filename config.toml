@@ -28,8 +28,9 @@ kws_enabled = true           # 常听唤醒：说「伊芙」就直接进录音�
 silence_ms = 900             # 说完后静音多久算一句结束
 max_seconds = 20             # 单次录音上限
 
-# 播报：离线 VITS 中文女声。模型不在时会退回 Windows 自带音色。
-tts_model = "models/voice/vits-zh-hf-eula"   # 22.05kHz 女声（aishell3 只有 8kHz，电话音）
+# 播报：离线 VITS 中文女声。界面上「点模型名 → 选择音色」可以换，换完会记到 .data/voice.json。
+# 备选：vits-zh-hf-eula（清冷）/ keqing（清亮）/ fanchen-C（播音腔）
+tts_model = "models/voice/vits-zh-hf-theresa"
 tts_enabled = true
 tts_speed = 1.0              # 0.5–2.0，大于 1 更快
 tts_volume = 1.0             # 0–1.5

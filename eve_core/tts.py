@@ -201,6 +201,50 @@ class PiperTts:
         return True
 
 
+def list_voice_models(voice_dir: str | Path) -> list[dict]:
+    """扫出 models/voice 下可用的音色。
+
+    只认 `vits*`（不然会把 ASR/KWS 也列进来），并且要求有 `lexicon.txt`：
+    没有词典的 piper 模型依赖 espeak 前端，这版 sherpa-onnx 没编进去，选了也用不了。
+    """
+    root = Path(voice_dir)
+    if not root.is_dir():
+        return []
+
+    found: list[dict] = []
+    for path in sorted(root.iterdir()):
+        if not path.is_dir() or not path.name.startswith("vits"):
+            continue
+        if not any(p.suffix == ".onnx" for p in path.iterdir()):
+            continue
+        if not (path / "tokens.txt").exists():
+            continue
+        if not (path / "lexicon.txt").exists():
+            continue
+        found.append(
+            {
+                "id": path.name,
+                "label": _voice_label(path.name),
+                "path": str(path),
+            }
+        )
+    return found
+
+
+_VOICE_NAMES = {
+    "vits-zh-hf-eula": "优菈（清冷）",
+    "vits-zh-hf-theresa": "德丽莎（偏软）",
+    "vits-zh-hf-keqing": "刻晴（清亮）",
+    "vits-zh-hf-fanchen-C": "播音腔（端正）",
+    "vits-zh-aishell3": "多说话人（8kHz 电话音）",
+    "vits-piper-zh_CN-huayan-medium": "Huayan（piper）",
+}
+
+
+def _voice_label(model_id: str) -> str:
+    return _VOICE_NAMES.get(model_id, model_id)
+
+
 class SapiTts:
     """兜底：Windows 自带 SAPI（pyttsx3）。音色机械，但不需要任何模型，一定能出声。"""
 

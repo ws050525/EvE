@@ -330,7 +330,81 @@ def tts_settings_come_from_config():
     assert 0.0 <= voice.tts_volume <= 1.5, voice.tts_volume
     assert 0.0 <= voice.tts_noise_scale <= 1.5, voice.tts_noise_scale
     assert 0.0 <= voice.tts_noise_scale_w <= 1.5, voice.tts_noise_scale_w
-    assert voice.tts_model.endswith("eula"), voice.tts_model
+    # 具体哪个音色会换，不写死；只要指向 models/voice 下的 vits 模型就行
+    assert "vits" in Path(voice.tts_model).name, voice.tts_model
+
+
+# ---------- 音色清单与偏好保存 ----------
+
+
+@case
+def list_voice_models_only_accepts_vits():
+    import tempfile
+    from pathlib import Path
+
+    from eve_core.tts import list_voice_models
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        good = root / "vits-fake"
+        good.mkdir()
+        (good / "tokens.txt").write_text("a 0\n", encoding="utf-8")
+        (good / "lexicon.txt").write_text("a a\n", encoding="utf-8")
+        (good / "fake.onnx").write_bytes(b"x")
+
+        # 名字不像 vits 的（ASR / KWS）不能列出来
+        other = root / "sherpa-onnx-kws-fake"
+        other.mkdir()
+        (other / "tokens.txt").write_text("a 0\n", encoding="utf-8")
+        (other / "fake.onnx").write_bytes(b"x")
+
+        # 没有词典的 piper 模型这版跑不了，也不该列出来
+        piper = root / "vits-piper-fake"
+        piper.mkdir()
+        (piper / "tokens.txt").write_text("a 0\n", encoding="utf-8")
+        (piper / "fake.onnx").write_bytes(b"x")
+
+        voices = list_voice_models(root)
+        assert [v["id"] for v in voices] == ["vits-fake"], voices
+        assert voices[0]["label"], voices[0]
+
+
+@case
+def voice_preference_is_persisted_and_reloaded():
+    import json
+    import tempfile
+    from pathlib import Path
+
+    from eve_core.config import _apply_voice_overlay, save_voice_preference
+
+    with tempfile.TemporaryDirectory() as tmp:
+        data_dir = Path(tmp)
+        save_voice_preference(
+            data_dir, tts_model="D:/models/voice/vits-zh-hf-theresa", tts_speaker=2
+        )
+        # 不认识的字段要丢掉，不能污染配置
+        save_voice_preference(data_dir, nonsense="x")
+
+        raw = json.loads((data_dir / "voice.json").read_text(encoding="utf-8"))
+        assert "nonsense" not in raw, raw
+
+        loaded = _apply_voice_overlay(VoiceSettings(), data_dir)
+        assert loaded.tts_model.endswith("theresa"), loaded.tts_model
+        assert loaded.tts_speaker == 2, loaded.tts_speaker
+
+
+@case
+def missing_voice_overlay_leaves_settings_alone():
+    import tempfile
+    from pathlib import Path
+
+    from eve_core.config import _apply_voice_overlay
+
+    with tempfile.TemporaryDirectory() as tmp:
+        base = VoiceSettings()
+        loaded = _apply_voice_overlay(base, Path(tmp))
+        assert loaded.tts_model == base.tts_model
+        assert loaded.tts_speaker == base.tts_speaker
 
 
 def main() -> int:

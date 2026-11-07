@@ -10,12 +10,15 @@ v0.4 起，"模型"是一等公民：
 
 from __future__ import annotations
 
+import json
 import os
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .voice import VoiceSettings
+
+VOICE_OVERLAY = "voice.json"
 
 
 def _default_voice() -> VoiceSettings:
@@ -166,6 +169,52 @@ def _as_list(value) -> list[str]:
     return list(value)
 
 
+# ---------- 界面里改音色的持久化 ----------
+# 不去改 config.toml（那里有注释和顺序，程序改写容易毁掉手工编辑），
+# 而是在 .data/voice.json 里存一份覆盖值。.data/ 本来就不进版本库。
+
+
+def _apply_voice_overlay(voice: VoiceSettings, data_dir: Path) -> VoiceSettings:
+    path = Path(data_dir) / VOICE_OVERLAY
+    if not path.exists():
+        return voice
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return voice
+    if not isinstance(raw, dict):
+        return voice
+    for key, value in raw.items():
+        if hasattr(voice, key) and not key.startswith("_"):
+            try:
+                setattr(voice, key, value)
+            except Exception:
+                pass
+    return voice
+
+
+def save_voice_preference(data_dir: Path, **fields) -> Path:
+    """存一条音色偏好。只接受 VoiceSettings 上真实存在的字段。"""
+    path = Path(data_dir) / VOICE_OVERLAY
+    data: dict = {}
+    if path.exists():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                data = loaded
+        except (OSError, json.JSONDecodeError):
+            data = {}
+
+    valid = set(VoiceSettings.__dataclass_fields__)
+    for key, value in fields.items():
+        if key in valid and value is not None:
+            data[key] = value
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
+
+
 def load_config(config_path: str | Path | None = None) -> AppConfig:
     root = Path(__file__).resolve().parents[1]
     path = Path(config_path) if config_path else root / "config.toml"
@@ -243,6 +292,7 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
             voice_raw.get("tts_noise_scale_w", VoiceSettings.tts_noise_scale_w)
         ),
     )
+    voice = _apply_voice_overlay(voice, data_dir)
 
     return AppConfig(
         root=root,

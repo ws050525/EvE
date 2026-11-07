@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 from PySide6.QtCore import (
     QEasingCurve,
@@ -30,6 +31,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QMenu,
     QPushButton,
     QVBoxLayout,
@@ -43,9 +46,9 @@ from .mobius import MobiusWidget
 from .orb import OrbWindow
 from .tts import TtsBridge
 from .voice import VoiceBridge, WakeBridge
-from eve_core.config import load_config
+from eve_core.config import load_config, save_voice_preference
 from eve_core.pricing import format_money
-from eve_core.tts import TtsSettings
+from eve_core.tts import TtsSettings, list_voice_models
 from eve_core.voice import VoiceSettings, match_wake, mode_aliases, parse_mode_command
 
 GREETING = "今天想做点什么？"
@@ -54,6 +57,95 @@ SUGGESTIONS = ("打开记事本", "解释一下什么是 Agent", "帮我理一�
 
 TOP_BAR = 44
 SIDE = 96
+
+
+class VoiceDialog(QDialog):
+    """选音色：列表里挑一个，点「试听」会真的念一句，满意再点「使用」。"""
+
+    def __init__(
+        self,
+        voices: list[dict],
+        current_path: str,
+        preview,
+        parent: QWidget | None = None,
+    ):
+        super().__init__(parent)
+        self.setWindowTitle("选择音色")
+        self.setStyleSheet(theme.DIALOG_QSS)
+        self.setMinimumWidth(440)
+        self._voices = list(voices)
+        self._preview = preview
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 18, 20, 16)
+        layout.setSpacing(10)
+
+        title = QLabel("伊芙的声音", self)
+        title.setStyleSheet(
+            f"color: {theme.TEXT0}; font-family: {theme.FONT_STACK}; font-size: 13px;"
+        )
+        layout.addWidget(title)
+
+        self.list = QListWidget(self)
+        self.list.setStyleSheet(
+            f"QListWidget {{ background: {theme.BUBBLE}; border: 1px solid {theme.LINE};"
+            f" border-radius: 8px; color: {theme.TEXT0};"
+            f" font-family: {theme.FONT_STACK}; font-size: 12px; padding: 4px; }}"
+            f" QListWidget::item {{ padding: 8px; border-radius: 6px; }}"
+            f" QListWidget::item:selected {{ background: {theme.PANEL}; color: {theme.TEXT0}; }}"
+        )
+        current_row = 0
+        for index, voice in enumerate(self._voices):
+            item = QListWidgetItem(f"{voice['label']}    {voice['id']}")
+            item.setData(Qt.UserRole, voice["path"])
+            self.list.addItem(item)
+            if voice["path"] == current_path:
+                current_row = index
+        self.list.setCurrentRow(current_row)
+        layout.addWidget(self.list, 1)
+
+        hint = QLabel(
+            "换过的音色会记在 .data/voice.json，重启后仍然是这个。", self
+        )
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+
+        buttons = QHBoxLayout()
+        buttons.setSpacing(6)
+        preview_btn = QPushButton("试听", self)
+        preview_btn.setCursor(Qt.PointingHandCursor)
+        preview_btn.setStyleSheet(theme.DENY_BUTTON_QSS)
+        preview_btn.clicked.connect(self._on_preview)
+        buttons.addWidget(preview_btn)
+        buttons.addStretch(1)
+
+        cancel = QPushButton("取消", self)
+        cancel.setCursor(Qt.PointingHandCursor)
+        cancel.setStyleSheet(theme.DENY_BUTTON_QSS)
+        cancel.clicked.connect(self.reject)
+        buttons.addWidget(cancel)
+
+        use = QPushButton("使用", self)
+        use.setCursor(Qt.PointingHandCursor)
+        use.setStyleSheet(theme.ALLOW_BUTTON_QSS)
+        use.clicked.connect(self.accept)
+        buttons.addWidget(use)
+        layout.addLayout(buttons)
+
+    def chosen(self) -> dict | None:
+        item = self.list.currentItem()
+        if item is None:
+            return None
+        path = str(item.data(Qt.UserRole))
+        for voice in self._voices:
+            if voice["path"] == path:
+                return voice
+        return None
+
+    def _on_preview(self) -> None:
+        voice = self.chosen()
+        if voice is not None and self._preview is not None:
+            self._preview(voice["path"])
 
 
 class ConfirmCard(QFrame):
@@ -285,7 +377,7 @@ class ChatWindow(QWidget):
         self._orb.quit_requested.connect(self._quit_app)
         self._orb.confirm_answered.connect(self._resolve_pending)
 
-        self._voice_settings = self._load_voice_settings(config_path)
+        self._voice_settings, self._data_dir = self._load_voice_settings(config_path)
         self._voice = VoiceBridge(self._voice_settings, self)
         self._voice.state_changed.connect(self._on_voice_state)
         self._voice.transcript.connect(self._on_voice_text)
@@ -566,11 +658,12 @@ class ChatWindow(QWidget):
     # ---------- 语音 ----------
 
     @staticmethod
-    def _load_voice_settings(config_path: str | None) -> VoiceSettings:
+    def _load_voice_settings(config_path: str | None) -> tuple[VoiceSettings, Path]:
         try:
-            return load_config(config_path).voice
+            cfg = load_config(config_path)
+            return cfg.voice, cfg.data_dir
         except Exception:
-            return VoiceSettings()
+            return VoiceSettings(), Path(".data")
 
     def _on_voice(self) -> None:
         if self._busy:
@@ -741,6 +834,7 @@ class ChatWindow(QWidget):
         )
         speech = menu.addAction("语音播报：开" if self._tts_enabled else "语音播报：关")
         speech.triggered.connect(self._toggle_tts)
+        menu.addAction("选择音色…").triggered.connect(self._open_voice_dialog)
         menu.addAction("切换档位…").triggered.connect(self._open_mode_menu)
         menu.addAction("查看本次花费").triggered.connect(self._show_cost)
         return menu
@@ -748,6 +842,27 @@ class ChatWindow(QWidget):
     def _toggle_tts(self) -> None:
         self._tts_enabled = not self._tts_enabled
         self._set_status("语音播报已打开" if self._tts_enabled else "语音播报已关闭")
+
+    def _open_voice_dialog(self) -> None:
+        if self._busy:
+            self._set_status("这轮跑完再换音色…")
+            return
+        voices = list_voice_models(Path(self._voice_settings.tts_model).parent)
+        if not voices:
+            self._set_status("models/voice 下没有可用音色")
+            return
+        dialog = VoiceDialog(
+            voices, self._voice_settings.tts_model, self._tts.preview, self
+        )
+        if dialog.exec() != QDialog.Accepted:
+            return
+        chosen = dialog.chosen()
+        if not chosen:
+            return
+        self._voice_settings.tts_model = chosen["path"]
+        self._tts.set_model(chosen["path"])
+        save_voice_preference(self._data_dir, tts_model=chosen["path"], tts_speaker=0)
+        self._set_status(f"音色已换成「{chosen['label']}」，已记住")
 
     def _open_key_dialog(self, preselect: str = "") -> None:
         if self._busy:

@@ -139,7 +139,28 @@ ASR 会把「伊芙」听成「衣服」，所以唤醒词变体里收了它。
 | --- | --- |
 | 识别 | `sherpa-onnx-paraformer-zh-small-2024-03-09`（78 MB） |
 | 唤醒 | `sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01`（33 MB） |
-| 播报 | `vits-zh-hf-eula`（115 MB，22.05 kHz 单人女声） |
+| 播报 | `vits-zh-hf-theresa`（115 MB，22.05 kHz 单人女声） |
+
+### 换音色
+
+界面上**点顶栏的模型名 → 「选择音色…」**，列表里挑一个点「试听」，
+满意点「使用」。选过的会记在 `.data/voice.json`，重启还是它（不动 `config.toml`）。
+
+| 音色 | 风格 | 采样率 |
+| --- | --- | --- |
+| `vits-zh-hf-theresa` | 德丽莎，偏软（默认） | 22.05 kHz |
+| `vits-zh-hf-eula` | 优菈，清冷 | 22.05 kHz |
+| `vits-zh-hf-keqing` | 刻晴，清亮 | 22.05 kHz |
+| `vits-zh-hf-fanchen-C` | 播音腔，端正 | 16 kHz |
+| `vits-zh-aishell3` | 174 个说话人，但只有 8 kHz，电话音 | 8 kHz |
+
+下新的（镜像可用，直连 GitHub 会超时）：
+
+```powershell
+$name = 'vits-zh-hf-theresa'
+curl.exe -L -o "models\voice\$name.tar.bz2" "https://ghproxy.net/https://github.com/k2-fsa/sherpa-onnx/releases/download/tts-models/$name.tar.bz2"
+tar.exe -xjf "models\voice\$name.tar.bz2" -C models\voice
+```
 
 ### 微调播报
 
@@ -211,6 +232,8 @@ ASR 会把「伊芙」听成「衣服」，所以唤醒词变体里收了它。
 - [x] v0.6.0 语音输入：麦克风采集 + 静音断句 + sherpa-onnx 离线识别 + 文本级唤醒词「伊芙」（语音按钮 / Ctrl+Space）
 - [x] v0.6.1 常听唤醒 + 语音切档：说「伊芙」直接进录音；空格键也能说话；三个档位显示为聊天 / 桌面 / 工作；说「切换到工作」直接切档
 - [x] v0.6.2 语音播报：离线 VITS 女声（22.05 kHz），念之前洗文本；播报时暂停唤醒防自激；菜单可一键静音
+- [x] v0.6.3 播报可调：音量 / 语气起伏 / 停顿随机性进配置；`eve_tts.py` 命令行试听
+- [x] v0.6.4 音色可选：界面里「选择音色」试听切换，选择记到 `.data/voice.json`；内置四个女声
 - [ ] v0.7 打包：PyInstaller spec + 首次运行向导
 
 ## 实测数据
