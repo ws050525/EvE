@@ -55,6 +55,9 @@ GREETING = "今天想做点什么？"
 SUBTITLE = "说句话，或者让我帮你干点活"
 SUGGESTIONS = ("打开记事本", "解释一下什么是 Agent", "帮我理一下今天的待办")
 
+# 唤醒后的应答语。要短：两个字合成快，不会让人干等
+WAKE_REPLY = "Boss，我在"
+
 TOP_BAR = 44
 SIDE = 96
 
@@ -383,6 +386,8 @@ class ChatWindow(QWidget):
         self._voice.transcript.connect(self._on_voice_text)
         self._voice.failed.connect(self._on_voice_failed)
         self._voice_listening = False
+        self._collapsing = False  # 正在收成悬浮球（防重入）
+        self._pending_listen = False  # 唤醒应答播完后接着开麦
         self._mode_aliases: dict[str, str] = {}
 
         self._wake = None
@@ -678,11 +683,26 @@ class ChatWindow(QWidget):
         self._voice.listen()
 
     def _on_wake(self, word: str) -> None:
-        """常听唤醒命中：直接进录音，不用按键。"""
+        """常听唤醒命中：先应一声，再开始听指令。
+
+        不应答的话用户不知道它醒没醒——喊完半天没动静最难受。
+        应答语要短（两个字），合成快，不会让人等太久。
+        """
         if self._busy or self._voice_listening:
             return
-        self._set_status(f"听到「{word}」了，说吧…")
-        self._on_voice()
+
+        self._set_status("Boss，我在")
+        if self._orb.isVisible():
+            self._orb.set_state("happy")
+            self._orb.bubble("Boss，我在", "说吧")
+
+        if self._tts_enabled:
+            # 先播应答，播完再开麦：不然麦克风会把「Boss，我在」自己录进去
+            self._pending_listen = True
+            self._pause_wake()
+            self._tts.speak(WAKE_REPLY)
+        else:
+            self._on_voice()
 
     def _pause_wake(self) -> None:
         if self._wake is not None:
@@ -1199,10 +1219,14 @@ class ChatWindow(QWidget):
             self._set_status("出错了")
 
     def _on_replied(self, text: str) -> None:
+        # 干活时主窗是收起的。活干完了直接把界面拉回来，而不是在球上飘一句摘要——
+        # 用户要看的是结果，不是提示。
+        if self._collapsing:
+            self._cancel_collapse()
         if self._orb.isVisible():
             self._orb.set_state("happy")
-            summary = text.strip().replace("\n", " ")
-            self._orb.bubble("完成", summary[:40])
+            self._restore_from_orb()
+
         if self._streaming:
             self.chat.end_stream(text)
             self._streaming = False
@@ -1220,11 +1244,21 @@ class ChatWindow(QWidget):
 
     def _on_tts_finished(self, ok: bool) -> None:
         self._resume_wake()
+        if self._pending_listen:
+            # 唤醒应答刚播完，这时候才开麦
+            self._pending_listen = False
+            self._on_voice()
+            return
         if not self._busy:
             self._set_status(self._metrics_text())
 
     def _on_failed(self, message: str) -> None:
         self._streaming = False
+        # 出错时也不能让用户对着一颗球，把界面拉回来
+        if self._collapsing:
+            self._cancel_collapse()
+        if self._orb.isVisible():
+            self._restore_from_orb()
         self._set_state("error")
         self.chat.add_message("system", message)
         self._set_status("")
@@ -1233,20 +1267,65 @@ class ChatWindow(QWidget):
 
     # ---------- 悬浮球 ----------
 
+    def _fade(self, widget, start: float, end: float, duration: int, on_done=None):
+        """窗口透明度动画。半透明窗口真关掉一次再开，比尺寸动画稳。"""
+        anim = QPropertyAnimation(widget, b"windowOpacity", self)
+        anim.setDuration(duration)
+        anim.setStartValue(start)
+        anim.setEndValue(end)
+        anim.setEasingCurve(QEasingCurve.InOutCubic)
+        if on_done is not None:
+            anim.finished.connect(on_done)
+        anim.start(QPropertyAnimation.DeleteWhenStopped)
+        return anim
+
     def _collapse_to_orb(self) -> None:
-        """agent 干活时收起主窗，只留一个球在桌面上。"""
-        if self._orb.isVisible():
+        """agent 干活时收起主窗，只留一个球在桌面上。
+
+        收得太快会像闪一下消失，所以留一段淡出 + 球淡入的过渡。
+        """
+        if self._orb.isVisible() or self._collapsing:
             return
-        self.hide()
-        self._orb.set_state("thinking")
-        self._orb.show_at_edge()
-        self._orb.bubble("开始执行", "点我回到主窗口")
+        self._collapsing = True
+
+        def show_orb() -> None:
+            if not self._collapsing:  # 中途被打断（活干得太快）
+                return
+            self.hide()
+            self.setWindowOpacity(1.0)
+            self._orb.set_state("thinking")
+            self._orb.show_at_edge()
+            self._orb.setWindowOpacity(0.0)
+            self._orb.bubble("开始执行", "点我回到主窗口")
+            self._orb_anim = self._fade(self._orb, 0.0, 1.0, 280, self._finish_collapse)
+
+        self._collapse_anim = self._fade(self, 1.0, 0.0, 320, show_orb)
+
+    def _finish_collapse(self) -> None:
+        self._orb.setWindowOpacity(1.0)
+        self._collapsing = False
+
+    def _cancel_collapse(self) -> None:
+        """活干得太快：还没收完就该把界面拉回来。"""
+        if not self._collapsing:
+            return
+        self._collapsing = False
+        anim = getattr(self, "_collapse_anim", None)
+        if anim is not None:
+            anim.stop()
+        self._orb.hide()
+        self.setWindowOpacity(1.0)
+        self.show()
 
     def _restore_from_orb(self) -> None:
+        if not self._orb.isVisible():
+            return
         self._orb.hide()
         self.show()
         self.raise_()
         self.activateWindow()
+        self.setWindowOpacity(0.0)
+        self._fade(self, 0.0, 1.0, 220)
 
     def _quit_app(self) -> None:
         self._orb.hide()
