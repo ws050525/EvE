@@ -380,9 +380,12 @@ class ChatWindow(QWidget):
         self._orb.quit_requested.connect(self._quit_app)
         self._orb.confirm_answered.connect(self._resolve_pending)
 
-        self._voice_settings, self._data_dir, self._auto_confirm = (
-            self._load_voice_settings(config_path)
-        )
+        (
+            self._voice_settings,
+            self._data_dir,
+            self._auto_confirm,
+            self._mode_has_tools,
+        ) = self._load_voice_settings(config_path)
         self._voice = VoiceBridge(self._voice_settings, self)
         self._voice.state_changed.connect(self._on_voice_state)
         self._voice.transcript.connect(self._on_voice_text)
@@ -648,7 +651,9 @@ class ChatWindow(QWidget):
         self._set_status("思考中…")
         self._set_state("thinking")
         self._bridge.ask(text)
-        if self._mode == "desktop":
+        # 有工具的档位（桌面 / 工作）都收成悬浮球，纯聊天档不收。
+        # 以前写死成只收桌面档，所以切到工作档就没球了。
+        if self._mode_has_tools.get(self._mode, False):
             QTimer.singleShot(150, self._collapse_to_orb)
 
     def _use_chip(self, text: str) -> None:
@@ -667,12 +672,18 @@ class ChatWindow(QWidget):
     @staticmethod
     def _load_voice_settings(
         config_path: str | None,
-    ) -> tuple[VoiceSettings, Path, bool]:
+    ) -> tuple[VoiceSettings, Path, bool, dict[str, bool]]:
         try:
             cfg = load_config(config_path)
-            return cfg.voice, cfg.data_dir, bool(cfg.auto_confirm)
+            has_tools = {name: bool(mode.tools) for name, mode in cfg.modes.items()}
+            return cfg.voice, cfg.data_dir, bool(cfg.auto_confirm), has_tools
         except Exception:
-            return VoiceSettings(), Path(".data"), False
+            return (
+                VoiceSettings(),
+                Path(".data"),
+                False,
+                {"chat": False, "desktop": True, "work": True},
+            )
 
     def _on_voice(self) -> None:
         if self._busy:
@@ -792,6 +803,9 @@ class ChatWindow(QWidget):
         self._switching = False
         self._refresh_mode_chip()
         self._set_status("")
+        # 球还开着的话，把档位名一并换掉，不然看着像没切过去
+        if self._orb.isVisible():
+            self._orb.bubble(f"{self._mode_label(mode)}档", model_id)
         # 不清空对话：切断上下文的是 agent，界面没必要把用户刚说的话抹掉
         if self._started_chat:
             self.chat.add_note(
@@ -1311,6 +1325,10 @@ class ChatWindow(QWidget):
             return
         self._collapsing = True
 
+        # 兜底：动画回调万一没来（窗口被别的操作打断、被最小化等），
+        # 到点强制解除，否则之后再也不收球了——表现就是"悬浮球没了"。
+        QTimer.singleShot(900, self._reset_collapsing)
+
         def show_orb() -> None:
             if not self._collapsing:  # 中途被打断（活干得太快）
                 return
@@ -1319,10 +1337,15 @@ class ChatWindow(QWidget):
             self._orb.set_state("thinking")
             self._orb.show_at_edge()
             self._orb.setWindowOpacity(0.0)
-            self._orb.bubble("开始执行", "点我回到主窗口")
+            self._orb.bubble(f"{self._mode_label(self._mode)}档 · 开始执行", "点我回到主窗口")
             self._orb_anim = self._fade(self._orb, 0.0, 1.0, 280, self._finish_collapse)
 
         self._collapse_anim = self._fade(self, 1.0, 0.0, 320, show_orb)
+
+    def _reset_collapsing(self) -> None:
+        if self._collapsing and self._orb.isVisible():
+            self._orb.setWindowOpacity(1.0)
+        self._collapsing = False
 
     def _finish_collapse(self) -> None:
         self._orb.setWindowOpacity(1.0)

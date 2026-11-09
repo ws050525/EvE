@@ -147,6 +147,15 @@ class VoiceSettings:
     silence_ms: int = 900
     max_seconds: float = 20.0
     kws_enabled: bool = True  # 常听唤醒：不用按键，说「伊芙」就进录音
+    # ---------- 唤醒与断句的阈值（调这几个最见效）----------
+    # 唤醒灵敏度：调低更容易叫醒，但更容易被别的话误触发（0.05–0.4）
+    kws_threshold: float = 0.22
+    # 断句：低于这个音量不算说话；环境吵就调高
+    vad_energy_floor: float = 0.010
+    # 门限 = max(energy_floor, 环境噪音 × noise_gain)，越大越难触发
+    vad_noise_gain: float = 2.5
+    # 连续说多久才算"真的有人在说话"，调高能挡掉咳嗽、敲键盘
+    vad_min_speech_ms: int = 240
     # 播报
     tts_model: str = "models/voice/vits-zh-hf-eula"
     tts_speed: float = 1.0
@@ -156,6 +165,15 @@ class VoiceSettings:
     tts_noise_scale: float = 0.667  # 语气起伏，越大越"有感情"，太高会沙哑
     tts_noise_scale_w: float = 0.8  # 停顿长短的随机性
     tts_fx: bool = True  # 「AI 音色」后处理：轻压缩 + 提亮 + 一点空间感
+
+    def audio_config(self) -> "AudioConfig":
+        return AudioConfig(
+            silence_ms=self.silence_ms,
+            max_seconds=self.max_seconds,
+            energy_floor=self.vad_energy_floor,
+            noise_gain=self.vad_noise_gain,
+            min_speech_ms=self.vad_min_speech_ms,
+        )
 
     def wake_tokens(self) -> tuple[str, str]:
         """唤醒词的拼音 token（KWS 模型按声母+韵母建模）。"""

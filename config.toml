@@ -29,6 +29,12 @@ kws_enabled = true           # 常听唤醒：说「伊芙」就直接进录音�
 silence_ms = 900             # 说完后静音多久算一句结束
 max_seconds = 20             # 单次录音上限
 
+# 唤醒与断句的阈值——叫不醒 / 叫太多次才醒，先调这几个
+kws_threshold = 0.22         # 唤醒灵敏度：调低更容易叫醒（0.10 很敏感），调高更难
+vad_energy_floor = 0.010     # 低于这个音量不算说话；环境吵就调高（0.02 以上）
+vad_noise_gain = 2.5         # 门限 = max(energy_floor, 环境噪音 × 这个倍数)
+vad_min_speech_ms = 240      # 连续说多久才算真的在说话，挡掉咳嗽 / 敲键盘
+
 # 播报：离线 VITS 中文女声。界面上「点模型名 → 选择音色」可以换，换完会记到 .data/voice.json。
 # melo 是最自然的一个（44.1kHz 播报女声）；备选 theresa / eula / keqing / fanchen-C。
 tts_model = "models/voice/vits-melo-tts-zh_en"

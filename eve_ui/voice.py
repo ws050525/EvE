@@ -36,11 +36,7 @@ class VoiceWorker(QObject):
 
     def _ensure(self) -> None:
         if self._recorder is None:
-            cfg = AudioConfig(
-                silence_ms=self._settings.silence_ms,
-                max_seconds=self._settings.max_seconds,
-            )
-            self._recorder = Recorder(cfg)
+            self._recorder = Recorder(self._settings.audio_config())
         if self._recognizer is None:
             self._recognizer = SherpaRecognizer(self._settings.asr_model)
 
@@ -139,7 +135,11 @@ class WakeWorker(QObject):
             self.failed.emit(f"唤醒词「{label}」还没有拼音 token")
             return
 
-        detector = KwsDetector(self._settings.kws_model, [(tokens, label)])
+        detector = KwsDetector(
+            self._settings.kws_model,
+            [(tokens, label)],
+            threshold=self._settings.kws_threshold,
+        )
         if not detector.available:
             self.failed.emit(f"唤醒不可用：{detector.error}")
             return
