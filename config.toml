@@ -22,18 +22,28 @@ work_root = "."              # 文件工具和 shell_exec 的根目录，越界�
 # ---------- 语音 ----------
 # 模型放在 models/voice/ 下（不进版本库）。识别用 sherpa-onnx，只依赖 onnxruntime。
 [voice]
-asr_model = "models/voice/sherpa-onnx-paraformer-zh-small-2024-03-09"
+# 识别用 SenseVoice（2024-07 版）：中文准确率比 paraformer-small 高，还自带标点。
+# 下载：& 'D:\python\python.exe' tools\fetch_voice_models.py
+# 没下载也没关系，下面 asr_fallbacks 里第一个存在的会顶上。
+asr_model = "models/voice/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17"
+asr_fallbacks = ["models/voice/sherpa-onnx-paraformer-zh-small-2024-03-09"]
 kws_model = "models/voice/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01"
 wake_word = "伊芙"
 kws_enabled = true           # 常听唤醒：说「伊芙」就直接进录音，不用按键
-silence_ms = 900             # 说完后静音多久算一句结束
+silence_ms = 1000            # 说完后静音多久算一句结束（900 有点急，长句子会被切开）
 max_seconds = 20             # 单次录音上限
 
 # 唤醒与断句的阈值——叫不醒 / 叫太多次才醒，先调这几个
 kws_threshold = 0.22         # 唤醒灵敏度：调低更容易叫醒（0.10 很敏感），调高更难
 vad_energy_floor = 0.010     # 低于这个音量不算说话；环境吵就调高（0.02 以上）
-vad_noise_gain = 2.5         # 门限 = max(energy_floor, 环境噪音 × 这个倍数)
+vad_noise_gain = 2.5         # 开口门限 = max(energy_floor, 环境噪音 × 这个倍数)
+vad_hold_ratio = 0.7         # 说话中门限降到高门限的多少：调低更不容易被换气声切断
 vad_min_speech_ms = 240      # 连续说多久才算真的在说话，挡掉咳嗽 / 敲键盘
+
+# 断句引擎：energy（默认，纯能量）/ silero（模型判定，嘈杂环境明显更稳）
+# 用 silero 需要先下载 silero_vad.onnx（同一个抓取脚本会下）
+vad_engine = "energy"
+silero_vad_model = "models/voice/silero_vad.onnx"
 
 # 播报：离线 VITS 中文女声。界面上「点模型名 → 选择音色」可以换，换完会记到 .data/voice.json。
 # melo 是最自然的一个（44.1kHz 播报女声）；备选 theresa / eula / keqing / fanchen-C。

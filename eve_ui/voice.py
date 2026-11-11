@@ -38,7 +38,10 @@ class VoiceWorker(QObject):
         if self._recorder is None:
             self._recorder = Recorder(self._settings.audio_config())
         if self._recognizer is None:
-            self._recognizer = SherpaRecognizer(self._settings.asr_model)
+            # 配置里指定的模型还没下载时自动退回上一个能用的，不至于整个语音不可用
+            self._recognizer = SherpaRecognizer(
+                self._settings.asr_model, self._settings.asr_fallbacks
+            )
 
     @Slot()
     def listen(self) -> None:

@@ -141,7 +141,11 @@ def parse_mode_command(text: str, aliases: dict[str, str], max_chars: int = 10) 
 
 @dataclass
 class VoiceSettings:
-    asr_model: str = "models/voice/sherpa-onnx-paraformer-zh-small-2024-03-09"
+    asr_model: str = "models/voice/sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17"
+    # 指定的模型还没下载时按顺序退：第一个存在的就用它，不会因为缺模型直接不能说话
+    asr_fallbacks: tuple[str, ...] = (
+        "models/voice/sherpa-onnx-paraformer-zh-small-2024-03-09",
+    )
     kws_model: str = "models/voice/sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01"
     wake_word: str = "伊芙"
     silence_ms: int = 900
@@ -154,8 +158,13 @@ class VoiceSettings:
     vad_energy_floor: float = 0.010
     # 门限 = max(energy_floor, 环境噪音 × noise_gain)，越大越难触发
     vad_noise_gain: float = 2.5
+    # 已经在说话时门限降到这个比例，避免句尾换气被当成"说完了"把句子切两半
+    vad_hold_ratio: float = 0.7
     # 连续说多久才算"真的有人在说话"，调高能挡掉咳嗽、敲键盘
     vad_min_speech_ms: int = 240
+    # 断句用什么：energy（默认，纯能量）/ silero（模型，嘈杂环境稳）
+    vad_engine: str = "energy"
+    silero_vad_model: str = "models/voice/silero_vad.onnx"
     # 播报
     tts_model: str = "models/voice/vits-zh-hf-eula"
     tts_speed: float = 1.0
@@ -172,7 +181,10 @@ class VoiceSettings:
             max_seconds=self.max_seconds,
             energy_floor=self.vad_energy_floor,
             noise_gain=self.vad_noise_gain,
+            hold_ratio=self.vad_hold_ratio,
             min_speech_ms=self.vad_min_speech_ms,
+            vad_engine=self.vad_engine,
+            silero_model=self.silero_vad_model,
         )
 
     def wake_tokens(self) -> tuple[str, str]:
@@ -200,52 +212,111 @@ class AudioConfig:
     min_speech_ms: int = 240
     energy_floor: float = 0.010
     noise_gain: float = 2.5
+    hold_ratio: float = 0.7
+    # 录音前后各补一点静音：模型在"干净的开头/结尾"上认得最准，
+    # 直接把话筒第一个字喂进去，开头常被吞掉
+    lead_pad_ms: int = 150
+    tail_pad_ms: int = 150
+    vad_engine: str = "energy"
+    silero_model: str = ""
 
     @property
     def block_size(self) -> int:
         return max(1, int(self.sample_rate * self.block_ms / 1000))
 
 
+def _median(values: list[float]) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    middle = len(ordered) // 2
+    if len(ordered) % 2:
+        return ordered[middle]
+    return (ordered[middle - 1] + ordered[middle]) / 2.0
+
+
 class EnergyVad:
     """能量门限 + 静音计时的断句器。
 
-    只做一件事：什么时候该停止录音。判定只看 RMS，不依赖任何音频库，
-    所以可以用一串假数字把整条状态机测干净。
+    用**两个**门限，不是一个：
+
+    - 开口看高门限（环境噪音 × gain）。环境再吵，也得比背景高出一截才算说话。
+    - 已经开口后看低门限（高门限 × hold_ratio）。说话中途换气、句尾音量掉下去时，
+      用高门限会当场判定"说完了"，一句话就被拦腰切断——这是断句最隐蔽的坑。
+
+    环境噪音用前 8 块（≈256ms）的**中位数**估，不用最大值：最大值会被开头
+    一声咳嗽、一次敲桌子顶到很高，之后整段都判不出说话（"没听到说话"）。
+    没在说话的时候再慢慢跟住环境，空调开了、风扇转了也能跟上。
     """
 
-    CALIBRATE_BLOCKS = 8  # 前 8 个块用来估环境噪音
+    CALIBRATE_BLOCKS = 8  # 前 8 个块（≈256ms）用来估环境噪音
+    # 噪声估计的上限。万一用户一按下就开始说话，那 256ms 录到的是人声不是环境，
+    # 不加盖会把门限顶到再也听不见人说话。0.05 已经是很吵的房间了。
+    NOISE_CEILING = 0.05
 
     def __init__(self, cfg: AudioConfig):
         self.cfg = cfg
         self.reset()
 
     def reset(self) -> None:
+        self._calib: list[float] = []
         self._noise = 0.0
-        self._calibrated = 0
         self._speech_ms = 0.0
         self._silence_ms = 0.0
+        self._in_speech = False
 
     @property
     def heard_speech(self) -> bool:
         return self._speech_ms >= self.cfg.min_speech_ms
 
-    def threshold(self) -> float:
+    @property
+    def calibrated(self) -> bool:
+        return len(self._calib) >= self.CALIBRATE_BLOCKS
+
+    def _start_level(self) -> float:
         return max(self.cfg.energy_floor, self._noise * self.cfg.noise_gain)
+
+    def threshold(self) -> float:
+        """当前生效的门限：没开口看高门限，开口了看低门限。"""
+        start = self._start_level()
+        if self._in_speech:
+            return max(self.cfg.energy_floor * 0.6, start * self.cfg.hold_ratio)
+        return start
 
     def update(self, rms: float) -> bool:
         """喂一个音频块的 RMS，返回 True 表示"这句说完了"。"""
-        if self._calibrated < self.CALIBRATE_BLOCKS:
-            # 环境噪音取前几个块的最大值，避免开头有个响动就把门限抬太高
-            self._noise = max(self._noise, rms)
-            self._calibrated += 1
+        level = float(rms)
 
-        if rms >= self.threshold():
+        if not self.calibrated:
+            self._calib.append(level)
+            self._noise = min(_median(self._calib), self.NOISE_CEILING)
+            return False
+
+        if self._in_speech:
+            if level >= self.threshold():
+                self._silence_ms = 0.0
+                self._speech_ms += self.cfg.block_ms
+                return False
+            self._silence_ms += self.cfg.block_ms
+            if self._silence_ms >= self.cfg.silence_ms:
+                self._in_speech = False
+                # 收尾就说收尾，哪怕这几下响动不够 min_speech_ms。
+                # 调用方看 heard_speech 决定这句算不算数——不返回 True 的话，
+                # 一声咳嗽之后会一直录到 max_seconds 才停。
+                return True
+            return False
+
+        if level >= self._start_level():
+            self._in_speech = True
             self._speech_ms += self.cfg.block_ms
             self._silence_ms = 0.0
-        else:
-            self._silence_ms += self.cfg.block_ms
+            return False
 
-        return self.heard_speech and self._silence_ms >= self.cfg.silence_ms
+        # 安静时跟一下环境噪音，别一直用开头那 256ms 的印象
+        self._noise = min(
+            self._noise * 0.97 + level * 0.03, self.NOISE_CEILING
+        )
+        return False
 
     @staticmethod
     def rms(samples) -> float:
@@ -263,6 +334,7 @@ class EnergyVad:
 class Recorder:
     def __init__(self, cfg: AudioConfig | None = None):
         self.cfg = cfg or AudioConfig()
+        self.note = ""  # 实际用的是哪种断句，界面/日志可以看到
 
     @property
     def available(self) -> bool:
@@ -273,14 +345,15 @@ class Recorder:
         return True
 
     def record_utterance(self, on_level: Callable[[float], None] | None = None):
-        """录一句话，静音自动收尾。返回 float32 numpy 数组；没听到人说话就返回空。"""
+        """录一句话，静音自动收尾。返回 float32 numpy 数组；没听到人说话就返回空。
+
+        收尾之后在前后各补一小段静音再交给识别：模型在干净的头尾上认得更准，
+        直接怼一个"开口第一帧"和"掐断的尾巴"进去，开头结尾最容易丢字。
+        """
         import numpy as np
         import sounddevice as sd
 
         cfg = self.cfg
-        vad = EnergyVad(cfg)
-        blocks: list = []
-        total_frames = 0
         limit_frames = int(cfg.max_seconds * cfg.sample_rate)
 
         with sd.InputStream(
@@ -289,37 +362,184 @@ class Recorder:
             dtype="float32",
             blocksize=cfg.block_size,
         ) as stream:
-            while total_frames < limit_frames:
-                data, overflowed = stream.read(cfg.block_size)
-                samples = data[:, 0] if getattr(data, "ndim", 1) > 1 else data
-                blocks.append(samples.copy())
-                total_frames += len(samples)
-                level = EnergyVad.rms(samples)
-                if on_level is not None:
-                    on_level(level)
-                if vad.update(level):
-                    break
+            blocks, heard = self._collect(stream, cfg, limit_frames, on_level)
 
-        if not blocks or not vad.heard_speech:
+        if not blocks or not heard:
             return np.zeros(0, dtype="float32")
-        return np.concatenate(blocks).astype("float32")
+
+        audio = np.concatenate(blocks).astype("float32")
+        lead = np.zeros(
+            max(0, int(cfg.sample_rate * cfg.lead_pad_ms / 1000)), dtype="float32"
+        )
+        tail = np.zeros(
+            max(0, int(cfg.sample_rate * cfg.tail_pad_ms / 1000)), dtype="float32"
+        )
+        return np.concatenate([lead, audio, tail]).astype("float32")
+
+    # ---------- 采集循环 ----------
+
+    def _read_block(self, stream, cfg: AudioConfig):
+        data = stream.read(cfg.block_size)[0]
+        samples = data[:, 0] if getattr(data, "ndim", 1) > 1 else data
+        return samples
+
+    def _collect(self, stream, cfg: AudioConfig, limit_frames: int, on_level):
+        blocks: list = []
+        total = 0
+
+        silero = None
+        if cfg.vad_engine == "silero":
+            silero = _make_silero(cfg)
+            if silero is None:
+                self.note = "silero 模型不可用，回退到能量断句"
+            else:
+                self.note = "silero 断句"
+
+        if silero is not None:
+            heard = False
+            try:
+                while total < limit_frames:
+                    samples = self._read_block(stream, cfg)
+                    blocks.append(samples.copy())
+                    total += len(samples)
+                    if on_level is not None:
+                        on_level(EnergyVad.rms(samples))
+                    silero.accept_waveform(samples)
+                    if silero.is_speech_detected():
+                        heard = True
+                    elif heard:
+                        break  # 说完一段，silero 判定结束
+                return blocks, heard
+            except Exception as exc:  # 任何毛病都退回能量断句，别让语音彻底不能用
+                self.note = f"silero 出错({type(exc).__name__})，回退到能量断句"
+                blocks.clear()
+                total = 0
+
+        if cfg.vad_engine != "silero":
+            self.note = "能量断句"
+
+        vad = EnergyVad(cfg)
+        while total < limit_frames:
+            samples = self._read_block(stream, cfg)
+            blocks.append(samples.copy())
+            total += len(samples)
+            level = EnergyVad.rms(samples)
+            if on_level is not None:
+                on_level(level)
+            if vad.update(level):
+                break
+        return blocks, vad.heard_speech
+
+
+def _make_silero(cfg: AudioConfig):
+    """按配置造一个 sherpa-onnx 的 silero VAD；不可用返回 None。
+
+    能量断句在安静房间够用，一有风扇、空调、键盘就难调；silero 是模型判定，
+    嘈杂环境下稳得多。它是加分项，坏了就回退，不能让语音整体不可用。
+    """
+    if not cfg.silero_model:
+        return None
+    model = Path(cfg.silero_model)
+    if not model.exists():
+        return None
+    try:
+        import sherpa_onnx
+
+        config = sherpa_onnx.VadModelConfig()
+        config.silero_vad.model = str(model)
+        config.silero_vad.threshold = 0.5
+        config.silero_vad.min_silence_duration = max(0.25, cfg.silence_ms / 1000)
+        config.silero_vad.min_speech_duration = max(0.1, cfg.min_speech_ms / 1000)
+        config.silero_vad.window_size = 512
+        config.sample_rate = cfg.sample_rate
+        return sherpa_onnx.VoiceActivityDetector(config, buffer_size_in_seconds=30)
+    except Exception:
+        return None
 
 
 # ---------- 识别 ----------
 
+# sherpa-onnx 的离线识别器家族。同一份 samples 喂进去，只有加载方式不同，
+# 所以按模型目录里的文件特征自动认，换模型只改 config.toml，不用改代码。
+ASR_FAMILIES = ("sense_voice", "paraformer", "whisper", "transducer")
+
+
+def detect_asr_family(model_dir: str | Path) -> str:
+    """看目录里的文件（和目录名）猜这是哪一族模型；认不出返回空串。"""
+    root = Path(model_dir)
+    if not root.is_dir():
+        return ""
+    name = root.name.lower()
+    files = {p.name.lower() for p in root.glob("*.onnx")}
+
+    if "sense-voice" in name or "sense_voice" in name:
+        return "sense_voice"
+    if "paraformer" in name:
+        return "paraformer"
+    if "whisper" in name:
+        return "whisper"
+
+    # 只有权重不够，还要看结构：paraformer / sensevoice 都是单个 model*.onnx
+    if files & {"model.onnx", "model.int8.onnx"}:
+        return "paraformer"
+    if any(f.startswith("encoder") for f in files) and any(
+        f.startswith("joiner") for f in files
+    ):
+        return "transducer"
+    if any(f.startswith("encoder") for f in files) and any(
+        f.startswith("decoder") for f in files
+    ):
+        return "whisper"
+    return ""
+
+
+def _pick_weights(root: Path, prefixes: tuple[str, ...]) -> Path | None:
+    """在目录里挑权重：优先非 int8（准），只有 int8 就用它（快）。"""
+    found: list[Path] = []
+    for prefix in prefixes:
+        found = [p for p in sorted(root.glob(f"{prefix}*.onnx")) if p.is_file()]
+        if found:
+            break
+    if not found:
+        return None
+    for path in found:
+        if "int8" not in path.name:
+            return path
+    return found[0]
+
 
 class SherpaRecognizer:
-    """sherpa-onnx 离线识别（paraformer 中文小模型）。"""
+    """sherpa-onnx 离线识别。
 
-    def __init__(self, model_dir: str | Path):
-        self.model_dir = Path(model_dir)
+    支持 SenseVoice / paraformer / whisper / transducer 四族，按目录自动认
+    （见 `detect_asr_family`）。首选 SenseVoice：中文准确率比 paraformer-small
+    高一截，还自带标点和数字规整，认出来的文字直接能看。
+    """
+
+    def __init__(self, model_dir: str | Path, fallbacks: tuple[str, ...] | list[str] = ()):
+        self.requested = Path(model_dir)
+        candidates = [self.requested, *(Path(item) for item in fallbacks)]
+        self.model_dir = next((path for path in candidates if path.is_dir()), self.requested)
+        self.note = ""
+        if self.model_dir != self.requested:
+            self.note = f"用回退模型 {self.model_dir.name}（{self.requested.name} 还没下载）"
         self._recognizer = None
         self.error = ""
+
+    @property
+    def family(self) -> str:
+        return detect_asr_family(self.model_dir)
 
     @property
     def available(self) -> bool:
         if not self.model_dir.is_dir():
             self.error = f"模型目录不存在：{self.model_dir}"
+            return False
+        if not (self.model_dir / "tokens.txt").exists():
+            self.error = f"{self.model_dir} 里缺 tokens.txt"
+            return False
+        if not self.family:
+            self.error = f"认不出 {self.model_dir.name} 是哪一族识别模型"
             return False
         try:
             import sherpa_onnx  # noqa: F401
@@ -333,27 +553,63 @@ class SherpaRecognizer:
             return self._recognizer
         import sherpa_onnx
 
-        # 官方包有时叫 model.onnx，有时只给 model.int8.onnx（量化版，CPU 上更快）
-        model = None
-        for name in ("model.int8.onnx", "model.onnx"):
-            candidate = self.model_dir / name
-            if candidate.exists():
-                model = candidate
-                break
-        tokens = self.model_dir / "tokens.txt"
-        if model is None or not tokens.exists():
-            raise FileNotFoundError(
-                f"{self.model_dir} 里缺 model.onnx / model.int8.onnx / tokens.txt"
-            )
+        tokens = str(self.model_dir / "tokens.txt")
+        family = self.family
 
-        self._recognizer = sherpa_onnx.OfflineRecognizer.from_paraformer(
-            paraformer=str(model),
-            tokens=str(tokens),
-            num_threads=2,
-            sample_rate=SAMPLE_RATE,
-            feature_dim=80,
-            decoding_method="greedy_search",
-        )
+        if family == "sense_voice":
+            model = _pick_weights(self.model_dir, ("model",))
+            if model is None:
+                raise FileNotFoundError(f"{self.model_dir} 里找不到 model*.onnx")
+            # use_itn 打开才带标点和数字规整；老版本 sherpa-onnx 没有这些参数，退回去
+            try:
+                self._recognizer = sherpa_onnx.OfflineRecognizer.from_sense_voice(
+                    model=str(model),
+                    tokens=tokens,
+                    num_threads=2,
+                    use_itn=True,
+                    language="zh",
+                )
+            except TypeError:
+                self._recognizer = sherpa_onnx.OfflineRecognizer.from_sense_voice(
+                    model=str(model), tokens=tokens, num_threads=2
+                )
+        elif family == "paraformer":
+            model = _pick_weights(self.model_dir, ("model",))
+            if model is None:
+                raise FileNotFoundError(f"{self.model_dir} 里找不到 model*.onnx")
+            self._recognizer = sherpa_onnx.OfflineRecognizer.from_paraformer(
+                paraformer=str(model),
+                tokens=tokens,
+                num_threads=2,
+                sample_rate=SAMPLE_RATE,
+                feature_dim=80,
+                decoding_method="greedy_search",
+            )
+        elif family == "whisper":
+            encoder = _pick_weights(self.model_dir, ("encoder",))
+            decoder = _pick_weights(self.model_dir, ("decoder",))
+            if encoder is None or decoder is None:
+                raise FileNotFoundError(f"{self.model_dir} 里缺 encoder / decoder")
+            self._recognizer = sherpa_onnx.OfflineRecognizer.from_whisper(
+                encoder=str(encoder),
+                decoder=str(decoder),
+                tokens=tokens,
+                num_threads=2,
+                language="zh",
+            )
+        else:  # transducer
+            encoder = _pick_weights(self.model_dir, ("encoder",))
+            decoder = _pick_weights(self.model_dir, ("decoder",))
+            joiner = _pick_weights(self.model_dir, ("joiner",))
+            if encoder is None or decoder is None or joiner is None:
+                raise FileNotFoundError(f"{self.model_dir} 里缺 encoder/decoder/joiner")
+            self._recognizer = sherpa_onnx.OfflineRecognizer.from_transducer(
+                encoder=str(encoder),
+                decoder=str(decoder),
+                joiner=str(joiner),
+                tokens=tokens,
+                num_threads=2,
+            )
         return self._recognizer
 
     def transcribe(self, samples) -> str:

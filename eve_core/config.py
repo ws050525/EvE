@@ -274,8 +274,16 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
         raise ConfigError(f"default_mode '{default_mode}' 不在档位列表里")
 
     voice_raw = data.get("voice", {})
+    fallbacks_raw = voice_raw.get("asr_fallbacks")
+    if fallbacks_raw is None:
+        asr_fallbacks = tuple(resolve(item) for item in VoiceSettings.asr_fallbacks)
+    elif isinstance(fallbacks_raw, str):
+        asr_fallbacks = (str(resolve(fallbacks_raw)),)
+    else:
+        asr_fallbacks = tuple(str(resolve(item)) for item in fallbacks_raw)
     voice = VoiceSettings(
         asr_model=str(resolve(voice_raw.get("asr_model", VoiceSettings.asr_model))),
+        asr_fallbacks=asr_fallbacks,
         kws_model=str(resolve(voice_raw.get("kws_model", VoiceSettings.kws_model))),
         wake_word=str(voice_raw.get("wake_word", VoiceSettings.wake_word)),
         silence_ms=int(voice_raw.get("silence_ms", VoiceSettings.silence_ms)),
@@ -290,8 +298,15 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
         vad_noise_gain=float(
             voice_raw.get("vad_noise_gain", VoiceSettings.vad_noise_gain)
         ),
+        vad_hold_ratio=float(
+            voice_raw.get("vad_hold_ratio", VoiceSettings.vad_hold_ratio)
+        ),
         vad_min_speech_ms=int(
             voice_raw.get("vad_min_speech_ms", VoiceSettings.vad_min_speech_ms)
+        ),
+        vad_engine=str(voice_raw.get("vad_engine", VoiceSettings.vad_engine)),
+        silero_vad_model=str(
+            resolve(voice_raw.get("silero_vad_model", VoiceSettings.silero_vad_model))
         ),
         tts_model=str(resolve(voice_raw.get("tts_model", VoiceSettings.tts_model))),
         tts_speed=float(voice_raw.get("tts_speed", VoiceSettings.tts_speed)),

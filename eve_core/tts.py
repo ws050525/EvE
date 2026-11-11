@@ -13,7 +13,9 @@ edge-tts 走微软免费端点，实测 403 被挡；本地合成稳定、不联
 from __future__ import annotations
 
 import math
+import queue
 import re
+import threading
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -27,7 +29,10 @@ _SPACES = re.compile(r"[ \t]+")
 # 模型词典里没有的装饰符号，留着只会刷 OOV 警告
 _DECOR = re.compile(r"[～~【】「」『』《》※•·^|<>]")
 
-MAX_SPEECH_CHARS = 220
+# 念多少字。以前是 220，长回复的后半段直接被砍掉——「后面的话没念」就是这么来的。
+# 现在只防病态输入（几千字的整篇文档），正常回复一律念完：真正控制节奏的是
+# 下面的逐句切分，不是把文本截短。
+MAX_SPEECH_CHARS = 3000
 
 
 def clean_for_speech(text: str) -> str:
@@ -118,6 +123,302 @@ def split_sentences(text: str, max_chars: int = 34) -> list[str]:
         chunks.pop()
 
     return [chunk for chunk in chunks if chunk.strip()]
+
+
+_END_MARKS = "。！？!?；;…\n"
+_SOFT_MARKS = "，、,：:"
+
+
+class SentenceStreamer:
+    """把流式吐出来的文字攒成「可以开念的句子」。
+
+    逐句播报的两个坑都在切分上：
+
+    1. 等整段说完再切，播报必然落后于文字（用户看到字已经出来一大段，声音还在后面追）；
+       所以要边生成边切，切出一句就送进合成。
+    2. 见标点就切，会切出「嗯。」这种两三个字的碎块。每块都要起一次合成、接一次音频，
+       碎块多了听感就是断断续续，而且短块的**头尾**最容易被音频设备吞掉。
+
+    所以这里只做一件事：攒够一个「完整、够长」的句子就吐出来，其余继续攒。
+    吐出来的片段拼回去等于原文（除了首尾空白），一个字都不丢。
+    """
+
+    def __init__(self, max_chars: int = 34, min_chars: int = 6, hard_limit: int = 120):
+        self.max_chars = max(8, int(max_chars))
+        self.min_chars = max(2, int(min_chars))
+        self.hard_limit = max(self.max_chars, int(hard_limit))
+        self._buffer = ""
+
+    def push(self, text: str) -> list[str]:
+        """喂一段新文字，返回这次能开念的句子（可能为空）。"""
+        self._buffer += str(text or "")
+        return self._drain(final=False)
+
+    def flush(self) -> list[str]:
+        """文本结束：把剩下的全部吐出去，不留尾巴。"""
+        return self._drain(final=True)
+
+    @property
+    def pending(self) -> str:
+        return self._buffer
+
+    def _drain(self, final: bool) -> list[str]:
+        out: list[str] = []
+        while True:
+            end = self._cut_point(final)
+            if end is None:
+                break
+            piece, self._buffer = self._buffer[:end], self._buffer[end:]
+            out.extend(split_sentences(piece, self.max_chars))
+        return [chunk for chunk in out if chunk.strip()]
+
+    def _cut_point(self, final: bool) -> int | None:
+        buf = self._buffer
+        if not buf:
+            return None
+        if final:
+            return len(buf)
+
+        # 先找句末标点：够长才算一句，太短的（「嗯。」）继续往后攒
+        for index, char in enumerate(buf):
+            if char in _END_MARKS and index + 1 >= self.min_chars:
+                return index + 1
+
+        # 一直没句号：退一步找逗号，免得第一句要等太久才出声
+        if len(buf) >= self.max_chars:
+            soft = -1
+            for index, char in enumerate(buf[: self.max_chars + 1]):
+                if char in _SOFT_MARKS:
+                    soft = index
+            if soft + 1 >= self.min_chars:
+                return soft + 1
+
+        # 连逗号都没有、已经长得离谱：只能硬切（最后手段，正常回复碰不到）
+        if len(buf) >= self.hard_limit:
+            return self.max_chars
+        return None
+
+
+def _silence(rate: int, ms: float):
+    import numpy as np
+
+    count = max(0, int(rate * ms / 1000.0))
+    return np.zeros(count, dtype="float32")
+
+
+class PlaybackSession:
+    """一次播报：文本片段推进来，边合成边播。
+
+    为什么不是「一句一个 sd.play」——这正是"前后几句念不全"的根因：
+
+    - 每句都开关一次音频设备。设备刚启动那几十毫秒是吞数据的，
+      句子的**开头**就没了；`sd.wait()` 一返回就换下一句，最后一点尾音
+      和下一次启动撞在一起，句子的**结尾**也就没了。
+    - 块越短，头尾占比越大，所以碎句听起来缺得最明显。
+
+    现在整段只开一路流：开头垫一小段静音（等设备真正跑起来），
+    句间用静音填（不欠载），收尾补一段静音并等缓冲区播完才关流。
+    合成和播放分两条线程，下一句在上一句还没播完时就合成好了。
+    """
+
+    LEAD_MS = 120  # 开头垫静音：设备启动期吃掉的声音就落在这段静音里
+    TAIL_MS = 180  # 结尾补静音：留出余量，尾音不会被关流掐掉
+    GAP_BLOCK_MS = 20  # 等下一句时按 20ms 填静音，避免欠载的"咔"
+
+    def __init__(self, engine, on_start=None, on_done=None, on_error=None):
+        self.engine = engine
+        self._on_start = on_start
+        self._on_done = on_done
+        self._on_error = on_error
+        self._cond = threading.Condition()
+        self._pending: list[str] = []
+        self._splitter = SentenceStreamer()
+        self._audio: queue.Queue = queue.Queue()
+        self._closed = False
+        self._cancelled = False
+        self._started = False
+        self._stream = None
+        self._error = ""
+        self.played = False
+        self._threads: list[threading.Thread] = []
+
+    # ---------- 外部接口 ----------
+
+    def push(self, text: str) -> None:
+        """喂一段话。可以反复调用（流式场景），也可以一口气推完整段。"""
+        with self._cond:
+            if self._closed or self._cancelled:
+                return
+            self._pending.extend(self._splitter.push(text))
+            self._cond.notify_all()
+
+    def close(self) -> None:
+        """文本到头了：把剩下的吐出去，播完自然结束。"""
+        with self._cond:
+            if self._closed:
+                return
+            self._closed = True
+            self._pending.extend(self._splitter.flush())
+            self._cond.notify_all()
+
+    def cancel(self) -> None:
+        """立刻闭嘴（用户发了新消息 / 关窗口）。"""
+        with self._cond:
+            self._cancelled = True
+            self._cond.notify_all()
+        try:
+            self._audio.put_nowait(None)  # 叫醒播放线程
+        except Exception:
+            pass
+        stream = self._stream
+        if stream is not None:
+            try:
+                stream.abort()
+            except Exception:
+                pass
+
+    def start(self) -> None:
+        if self._started:
+            return
+        self._started = True
+        self._threads = [
+            threading.Thread(target=self._produce, daemon=True, name="eve-tts-synth"),
+            threading.Thread(target=self._play, daemon=True, name="eve-tts-out"),
+        ]
+        for thread in self._threads:
+            thread.start()
+
+    def join(self, timeout: float | None = None) -> None:
+        for thread in self._threads:
+            thread.join(timeout)
+
+    @property
+    def error(self) -> str:
+        return self._error
+
+    # ---------- 合成 ----------
+
+    def _produce(self) -> None:
+        try:
+            while True:
+                with self._cond:
+                    while not self._pending and not self._closed and not self._cancelled:
+                        self._cond.wait(0.2)
+                    if self._cancelled:
+                        return
+                    if not self._pending:
+                        if self._closed:
+                            return
+                        continue
+                    sentence = self._pending.pop(0)
+                samples, rate = self.engine.synthesize(sentence)
+                if samples is not None and len(samples) > 0:
+                    self._audio.put((samples, rate))
+        except Exception as exc:  # 合成挂了也要让播放线程收尾
+            self._fail(f"合成失败：{type(exc).__name__}: {exc}")
+        finally:
+            self._audio.put(None)
+
+    def _fail(self, message: str) -> None:
+        self._error = message
+        callback = self._on_error
+        if callback is not None:
+            try:
+                callback(message)
+            except Exception:
+                pass
+
+    # ---------- 播放 ----------
+
+    def _play(self) -> None:
+        stream = None
+        rate = 0
+        played = False
+        try:
+            import sounddevice as sd
+
+            while True:
+                if self._cancelled:  # 取消后队列里残留的音频也不能再播
+                    break
+                got = True
+                try:
+                    item = self._audio.get_nowait()
+                except queue.Empty:
+                    got = False
+                    item = None
+
+                if not got:
+                    if self._cancelled:
+                        break
+                    if stream is None:
+                        # 第一段音频还没合成好：先别开设备
+                        try:
+                            item = self._audio.get(timeout=0.2)
+                            got = True
+                        except queue.Empty:
+                            continue
+                    else:
+                        # 已经在播：用静音填住，别让设备欠载出"咔"的一声
+                        stream.write(_silence(rate, self.GAP_BLOCK_MS))
+                        continue
+                if item is None:
+                    break
+                samples, sample_rate = item
+                if stream is None or sample_rate != rate:
+                    if stream is not None:
+                        self._close_stream(stream, rate)
+                    rate = int(sample_rate)
+                    stream = self._open_stream(sd, rate)
+                    if not played and self._on_start is not None:
+                        self._on_start()
+                stream.write(samples)
+                played = True
+        except Exception as exc:
+            if not self._cancelled:  # 主动取消时 abort 抛的异常不算失败
+                self._fail(f"播放失败：{type(exc).__name__}: {exc}")
+        finally:
+            if stream is not None:
+                self._close_stream(stream, rate)
+            self._stream = None
+            self.played = played
+            callback = self._on_done
+            if callback is not None:
+                try:
+                    callback(bool(played) and not self._cancelled)
+                except Exception:
+                    pass
+
+    def _open_stream(self, sd, rate: int):
+        # latency="high"：给驱动更大的缓冲，换设备启动期不丢音
+        stream = sd.OutputStream(
+            samplerate=rate,
+            channels=1,
+            dtype="float32",
+            latency="high",
+            blocksize=0,
+        )
+        stream.start()
+        self._stream = stream  # 先登记，取消时才找得到它
+        stream.write(_silence(rate, self.LEAD_MS))
+        return stream
+
+    def _close_stream(self, stream, rate: int) -> None:
+        """补静音 → 等设备把缓冲区播完 → 再关。直接关会掐掉最后几个字。"""
+        try:
+            stream.write(_silence(rate, self.TAIL_MS))
+            latency = float(getattr(stream, "latency", 0.2) or 0.2)
+            time.sleep(min(0.6, latency * 2 + 0.05))
+        except Exception:
+            pass
+        finally:
+            try:
+                stream.stop()
+            except Exception:
+                pass
+            try:
+                stream.close()
+            except Exception:
+                pass
 
 
 @dataclass
@@ -368,44 +669,30 @@ class PiperTts:
             samples = np.clip(samples * self.volume, -1.0, 1.0)
         return np.clip(_edge_fade(samples, rate), -1.0, 1.0), rate
 
-    def speak(self, text: str) -> bool:
+    def speak(self, text: str, on_start=None, on_error=None) -> bool:
         """念一段话（阻塞到播完）。调用方负责放在后台线程。
 
-        按句子切开、边合成边播：第一句合完就开始出声，后面几句在这句播完前
-        已经合成好了。整段合成再播的话，65 字的回复要先干等 3.6 秒——那才是
-        "不利索"的真正原因，不是语速慢。
+        切句 → 逐句合成 → 一路流播出去，整段只开一次音频设备。
+        头尾静音和收尾等待都在 PlaybackSession 里，见那边的说明。
         """
-        import queue
-        import threading
+        session = self.new_session(on_start=on_start, on_error=on_error)
+        session.push(text)
+        session.close()
+        session.start()
+        session.join()
+        return session.played
 
-        import sounddevice as sd
+    def new_session(self, on_start=None, on_done=None, on_error=None) -> PlaybackSession:
+        """开一次播报会话（已经在跑了）。一边生成一边 push，最后 close。
 
-        sentences = split_sentences(clean_for_speech(text))
-        if not sentences:
-            return False
-
-        ready: queue.Queue = queue.Queue()
-
-        def producer() -> None:
-            for sentence in sentences:
-                samples, rate = self.synthesize(sentence)
-                if samples is not None:
-                    ready.put((samples, rate))
-            ready.put(None)
-
-        threading.Thread(target=producer, daemon=True).start()
-
-        played = False
-        while True:
-            item = ready.get()
-            if item is None:
-                break
-            samples, rate = item
-            sd.play(samples, rate)
-            sd.wait()
-            played = True
-            time.sleep(0.06)  # 句间小停顿，不然像机器人一口气读完
-        return played
+        线程在这里就起起来：调用方很容易忘了 start()，而忘了的表现是"静默不出声"，
+        很难查。start() 是幂等的，重复调用没关系。
+        """
+        session = PlaybackSession(
+            self, on_start=on_start, on_done=on_done, on_error=on_error
+        )
+        session.start()
+        return session
 
 
 def list_voice_models(voice_dir: str | Path) -> list[dict]:

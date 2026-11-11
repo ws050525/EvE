@@ -1,7 +1,7 @@
-# EVE 记忆报告（截至 v0.6.8）
+# EVE 记忆报告（截至 v0.6.9）
 
 > 给下一个对话用：读完这份就能接手，不用翻聊天记录。
-> 这份是**对话总结**，不是交接清单；`docs/HANDOFF.md` 是上一个作者留下的旧笔记，不要在里面追加。
+> 这份是**对话总结**，不是交接清单；上一版留下的 `docs/HANDOFF.md` 已删（内容并进这份）。
 
 ---
 
@@ -10,7 +10,7 @@
 一个本地优先的个人 agent：**本地模型陪聊 + 操作电脑，云端模型干重活**。
 
 - 仓库：https://github.com/ws050525/EvE （分支 `main`）
-- 当前版本：`0.6.8`（`eve_core/version.py`），最新标签 `v0.6.8`
+- 当前版本：`0.6.9`（`eve_core/version.py`），最新标签 `v0.6.9`
 - 工作目录：`D:\1\EVE`
 
 ## 2. 环境（容易踩的坑）
@@ -81,6 +81,8 @@ tests/      8 个文件 / 136 项，全部不需要模型
 - **0.5.8~0.5.9**：`app_launch` 走开始菜单（Get-StartApps，本机 335 条），支持中文名、`file=` 直接开文件、`key_type(save=)`。
 - **0.5.10**：界面内配 API Key、模型菜单带单价、`ctx` 胶囊调预算与步数。
 - **0.6.7**：`office_write`（直接生成 pptx/docx/xlsx）、最高权限开关、工作档补齐桌面工具。
+- **0.6.9**：语音两处大修（播报改成"一路流 + 流式切句"，识别换 SenseVoice + 双门限 VAD），
+  见第 12 节；顺手清掉 537MB 没用的音色和 `.tmp/`。
 
 ## 6. 关键决策（别推翻）
 
@@ -100,10 +102,10 @@ tests/      8 个文件 / 136 项，全部不需要模型
 
 **还没验的**：
 - 跨工具工作流「查资料 → 打开软件把资料写进去」：工具已配齐（`office_write`/`app_launch(file=)`/`window_focus`/`key_type`），没跑过端到端。
-- 语音端到端需要真人：喊「伊芙」听应答 → 说长指令 → 看播报断不断。
+- 语音端到端需要真人：喊「伊芙」听应答 → 说长指令 → 看播报断不断（代码侧已验证，见第 12 节）。
 
 **待办**：
-1. `models/voice/` 1.1GB，`fanchen-C`（3.8 字/秒）和 `aishell3`（8kHz）建议删。
+1. ~~`models/voice/` 里没用的音色~~（已删，见 12.4）。
 2. 唤醒叫不醒：`[voice] kws_threshold` 调低（0.22 → 0.15），或往 `WAKE_VARIANTS` 加误识别变体。
 3. 打包（PyInstaller one-folder）还没开始，模型要外置。
 4. `docs/design-v2-ui-voice.md` 的 §5.2 与 §8.1 对唤醒方案的说法矛盾，以 §8.1（两段式）为准。
@@ -116,20 +118,27 @@ tests/      8 个文件 / 136 项，全部不需要模型
 | --- | --- | --- |
 | `kws_threshold` | 唤醒灵敏度，调低更容易叫醒（0.10 很敏感，0.35 很迟钝） | 0.22 |
 | `vad_energy_floor` | 低于这个 RMS 不算说话；环境吵就调高 | 0.010 |
-| `vad_noise_gain` | 门限 = max(floor, 环境噪音 × 倍数) | 2.5 |
+| `vad_noise_gain` | 开口门限 = max(floor, 环境噪音 × 倍数) | 2.5 |
+| `vad_hold_ratio` | **新**：开口后门限降到高门限的这个比例，防"换气声把句子切断" | 0.7 |
 | `vad_min_speech_ms` | 连续说多久才算真在说话（挡咳嗽/敲键盘） | 240 |
-| `silence_ms` | 说完静音多久算一句结束 | 900 |
+| `silence_ms` | 说完静音多久算一句结束 | 1000 |
+| `vad_engine` | **新**：`energy`（默认）/ `silero`（模型断句，嘈杂环境更稳） | energy |
+| `silero_vad_model` | **新**：silero 模型路径，`tools\fetch_voice_models.py --vad` 下载 | models/voice/silero_vad.onnx |
+| `asr_model` / `asr_fallbacks` | **新**：识别模型（默认 SenseVoice），第一个存在的目录生效 | 见 config.toml |
 
 **要动代码时**（`eve_core/voice.py`）：
 
 | 位置 | 内容 |
 | --- | --- |
-| `VoiceSettings`（约 142 行） | 上面这些默认值 |
-| `EnergyVad`（约 209 行） | 断句状态机；`update()` 决定何时收尾，`threshold()` 算门限 |
-| `EnergyVad.CALIBRATE_BLOCKS` | 开头用几个块估环境噪音（8 块 ≈ 256ms） |
+| `VoiceSettings`（约 150 行） | 上面这些默认值 |
+| `EnergyVad`（约 238 行） | 断句状态机：双门限（开口/续说）、`update()` 决定何时收尾 |
+| `EnergyVad.CALIBRATE_BLOCKS` | 开头用几个块估环境噪音（8 块 ≈ 256ms，取中位数） |
+| `EnergyVad.NOISE_CEILING` | 噪声估计上限 0.05，防止"一开口就被当成环境噪音" |
 | `WAKE_VARIANTS`（约 32 行） | 唤醒词误识别变体，**ASR 会把「伊芙」听成「衣服」**，所以收了它 |
-| `_WAKE_TOKENS`（约 184 行） | 唤醒词 → 拼音 token，换唤醒词要在这里加一行 |
+| `_WAKE_TOKENS`（约 196 行） | 唤醒词 → 拼音 token，换唤醒词要在这里加一行 |
 | `KwsDetector.__init__` | `threshold` / `score` 参数（`eve_ui/voice.py` 里从配置传进来） |
+| `detect_asr_family()` | 按目录特征认识别模型家族（sense_voice / paraformer / whisper / transducer） |
+| `_make_silero()` | silero VAD 构造，失败一律回退能量断句 |
 
 调法建议：先只动 `kws_threshold`（0.22 → 0.15），不行再加变体；`vad_*` 只影响"说完什么时候停"，不影响能不能叫醒。
 
@@ -152,9 +161,90 @@ tests/      8 个文件 / 136 项，全部不需要模型
 & 'D:\python\python.exe' tests\test_voice.py # 单个测试
 ```
 
-测试共 8 个文件 / 136 项：persona / context / workspace / cost / apps / office / voice / agent_loop。
+测试共 8 个文件 / 147 项：persona / context / workspace / cost / apps / office / voice / agent_loop
+（语音 48 项；本轮新加流式切句、双门限、模型家族识别、模型回退等 11 条，已全绿）。
+
+下载语音模型（SenseVoice + silero VAD）：
+
+```powershell
+& 'D:\python\python.exe' tools\fetch_voice_models.py --list   # 先看有没有
+& 'D:\python\python.exe' tools\fetch_voice_models.py          # 下载（≈156MB 压缩包）
+```
 
 ## 11. 给下一个对话的开场建议
 
-> 读 `docs/MEMORY.md`，接着做：① 跨工具工作流端到端（查资料 → 写文件 → 打开软件写进去）；
-> ② 语音真人验收；③ 清理 models/voice 里没用的音色；④ 打包。
+> 读 `docs/MEMORY.md`。语音两处大修已完成并通过 147/147 测试（第 12 节），
+> 剩下的主要是**真人验收**。
+> 然后：① 跨工具工作流端到端（查资料 → 写文件 → 打开软件写进去）；② 打包。
+
+## 12. 语音两处大修（v0.6.9，已验证并提交）
+
+用户反馈两个 bug：① 阈值调完识别还是不理想，问有没有新模型；② 播报开头和结尾的句子念不全，
+播报跟不上文字生成。
+
+### 12.1 播报（`eve_core/tts.py` + `eve_ui/tts.py` + `eve_ui/main_window.py`）
+
+根因三个，都是**"每句一次 `sd.play`"**这套写法带来的：
+
+1. **`clean_for_speech` 把回复砍到 220 字**（`MAX_SPEECH_CHARS`）→ 长回复后半段根本没送进合成。
+   现在改 3000 字，只防病态输入；正常回复一律念完。
+2. **每句开关一次音频设备**：设备启动那几十毫秒会吞数据（开头没了），
+   `sd.wait()` 返回就换下一句（尾音被掐）。块越短，头尾缺失越明显。
+   → 新增 `PlaybackSession`：整段只开一路 `OutputStream`（`latency="high"`），
+   开头垫 120ms 静音、结尾补 180ms 静音并且等缓冲区真的播完才关流。
+   合成和播放分两条线程，下一句在上一句还没播完时就合成好。
+3. **等整段生成完才开始念** → 声音永远落后于文字。
+   → 新增 `SentenceStreamer`：流式文本攒成"完整且够长"的句子就吐出来（碎句不吐，
+   一直往后攒），`main_window._feed_speech()` 在 `reply_chunk` 里喂进去，
+   `_end_speech()` 在回复结束时收尾。
+
+线程模型：`TtsWorker` 持有当前 `PlaybackSession`，用 `_session_mark` 只让"当前这次"的
+结束信号生效（否则取消旧播报时会把唤醒提前恢复，自己念自己）。
+
+### 12.2 识别（`eve_core/voice.py` + `config.toml` + `tools/fetch_voice_models.py`）
+
+- **换模型**：默认 `SenseVoice`（`sherpa-onnx-sense-voice-zh-en-ja-ko-yue-int8-2024-07-17`，
+  ≈228MB，int8，自带标点+数字规整）。比原来的 `paraformer-zh-small-2024-03` 中文准得多。
+  下载：`& 'D:\python\python.exe' tools\fetch_voice_models.py`（走 ghproxy 镜像，失败退回直连）。
+- **没下载也能用**：`asr_fallbacks` 里第一个存在的目录顶上，`SherpaRecognizer.note` 会说明。
+- **自动认家族**：`detect_asr_family()` 按目录名+文件特征，换模型只改配置。
+- **断句改双门限**：开口看高门限，开口后看低门限（`vad_hold_ratio`），
+  说话中途音量掉一点不会被当成"说完了"（这是句子被拦腰切断的主因）。
+- **噪声估计改中位数 + 上限 0.05**：以前用最大值，开头一声响动就把门限顶死，
+  后面整段都判不出说话（表现为"没听到说话"）。
+- **录音前后各补 150ms 静音**再交给识别，头尾不容易丢字。
+- **可选 silero VAD**：`vad_engine = "silero"` + 下载 `silero_vad.onnx`。默认还是 energy。
+
+### 12.3 验证结果（2026-11-12）
+
+- `tests\test_voice.py` **48/48 通过**；8 个测试文件合计 **147/147**。
+- 真机播报：`tts.speak()` 走新链路，`played=True`，流只开一路、正常 stop/close；
+  逐句推送（模拟流式）时首次出声 ≈1.9s（含首句合成 0.9s）、整段播完正常。
+- `TtsBridge` 层（Qt 队列信号）实测：`started` 1 次、`finished(True)` 1 次，没有重复/丢失。
+- 新加的**预热**（`TtsBridge.preload()`，开窗 1.5s 后加载 VITS + 合一句"预热"）：
+  第一次播报的首声从 ~3.3s 降到 ~0.7s。
+- ASR 回退链路实测：SenseVoice 未就位时自动用 paraformer，三份示例音频识别正常（≈0.9s/句）。
+- **SenseVoice 已下载并实测**（2026-11-12，229MB，加载 0.85s）：
+  - 中文：和 paraformer 内容基本一致，但**带标点和阿拉伯数字**（「早上9点至下午5点。」）。
+  - 英/日/粤：paraformer 完全是乱码，SenseVoice 全对（它就是多语言模型）。
+  - 速度：5.6s 音频 0.19s（paraformer 0.06s），RTF 0.03，够用。
+  - `config.toml` 指向它，`SherpaRecognizer.note` 为空（没走回退）。
+- `sherpa-onnx 2.0.1` 的 `from_sense_voice` 签名确认有 `language` / `use_itn`；
+  silero VAD 能正常构造。
+
+### 12.4 清理（同时做了）
+
+- 删掉 `.tmp/`（151 个临时脚本和截图，11MB）、所有 `__pycache__`。
+- 删掉用不上的音色：`vits-zh-aishell3`（328MB，8kHz）、`vits-zh-hf-fanchen-C`（131MB，3.8 字/秒）、
+  `vits-piper-zh_CN-huayan-medium`（77MB，没 lexicon，代码根本加载不了）。合计省 537MB。
+- `.gitignore` 里 `/tools/` 改成 `/tools/*` + `!/tools/*.py`，否则 `tools\fetch_voice_models.py` 被忽略。
+- `docs/HANDOFF.md` 保持删除状态（旧笔记，内容已被本文件覆盖）。
+- 留下的：melo（当前音色）、eula（代码默认值）、theresa、keqing（备选）、
+  SenseVoice（ASR 主用）、paraformer（ASR 回退）、KWS、silero。
+
+### 12.5 下一步
+
+1. **真人验收**：喊「伊芙」→ 说长指令 → 听播报开头结尾、看是否跟得上文字。
+2. 真人说话再试，听不准就把 `vad_engine` 换成 `silero`（模型已下载）。
+3. `docs/design-v2-ui-voice.md` 的 §5.2/§8.1 矛盾仍未处理。
+4. 改动已提交（`v0.6.9`）并打了标签。

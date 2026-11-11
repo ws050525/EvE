@@ -1,5 +1,6 @@
 models/
-/tools/
+/tools/*
+!/tools/*.py
 .ssh/
 .tmp/
 .venv/

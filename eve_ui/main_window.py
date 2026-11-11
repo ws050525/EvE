@@ -393,6 +393,7 @@ class ChatWindow(QWidget):
         self._voice_listening = False
         self._collapsing = False  # 正在收成悬浮球（防重入）
         self._pending_listen = False  # 唤醒应答播完后接着开麦
+        self._tts_streaming = False  # 这次回复正在边生成边播
         self._mode_aliases: dict[str, str] = {}
 
         self._wake = None
@@ -414,6 +415,9 @@ class ChatWindow(QWidget):
         self._tts.started.connect(lambda: self._set_status("播报中…"))
         self._tts.finished.connect(self._on_tts_finished)
         self._tts.failed.connect(lambda msg: self._set_status(msg))
+        if self._tts_enabled:
+            # 提前把 VITS 加载好，第一句回复不用再等那 2 秒
+            QTimer.singleShot(1500, self._tts.preload)
         self._wire()
         # 指定了 EVE_MODEL 时跳过本地预加载，避免白起一次本地引擎
         if not os.environ.get("EVE_MODEL"):
@@ -648,6 +652,9 @@ class ChatWindow(QWidget):
         self.chat.add_message("user", text)
         self._set_busy(True)
         self._pause_wake()
+        # 上一轮还在念就别念了：新问题已经开口，旧回答继续播只是噪音
+        self._tts_streaming = False
+        self._tts.cancel()
         self._set_status("思考中…")
         self._set_state("thinking")
         self._bridge.ask(text)
@@ -898,6 +905,11 @@ class ChatWindow(QWidget):
 
     def _toggle_tts(self) -> None:
         self._tts_enabled = not self._tts_enabled
+        if not self._tts_enabled:
+            # 关掉就当场闭嘴，别让已经排好的句子继续念
+            self._tts_streaming = False
+            self._tts.cancel()
+            self._resume_wake()
         self._set_status("语音播报已打开" if self._tts_enabled else "语音播报已关闭")
 
     def _open_voice_dialog(self) -> None:
@@ -1224,7 +1236,9 @@ class ChatWindow(QWidget):
                 self._streaming = True
                 self._set_state("streaming")
                 self._set_status("")
-            self.chat.push_chunk(data.get("text", ""))
+            delta = data.get("text", "")
+            self.chat.push_chunk(delta)
+            self._feed_speech(delta)
         elif kind == "tool_start":
             self._set_state("acting")
             self._set_status(f"执行 {data.get('name')}…")
@@ -1255,6 +1269,36 @@ class ChatWindow(QWidget):
             self._set_state("error")
             self._set_status("出错了")
 
+    def _feed_speech(self, delta: str) -> None:
+        """模型每吐一段字就喂给播报：边生成边念，声音不落后于文字。
+
+        以前是等整段回复出完才开念，回复越长落后越多——用户听到的第一句
+        永远是"迟到的整段"。现在第一句一出标点就开始合成。
+        """
+        if not self._tts_enabled or not delta:
+            return
+        if not self._tts_streaming:
+            self._tts_streaming = True
+            self._pause_wake()  # 别把自己的播报当成唤醒词
+            self._tts.stream_begin()
+        self._tts.stream_text(delta)
+
+    def _end_speech(self, text: str) -> bool:
+        """回复结束：把没念完的收尾。返回是否真的会出声。"""
+        streaming, self._tts_streaming = self._tts_streaming, False
+        if not self._tts_enabled:
+            if streaming:
+                self._tts.cancel()  # 流到一半被关掉：会话还开着，得主动收
+            return False
+        if streaming:
+            self._tts.stream_end()
+            return True
+        if text.strip():
+            self._pause_wake()
+            self._tts.speak(text)
+            return True
+        return False
+
     def _on_replied(self, text: str) -> None:
         # 干活时主窗是收起的。活干完了直接把界面拉回来，而不是在球上飘一句摘要——
         # 用户要看的是结果，不是提示。
@@ -1272,12 +1316,11 @@ class ChatWindow(QWidget):
         self._set_state("idle")
         self._set_status(self._metrics_text())
         self._set_busy(False)
-        self._resume_wake()
 
-        # 念出来。播报期间暂停唤醒，免得把自己说的「伊芙」当成唤醒词
-        if self._tts_enabled and text.strip():
-            self._pause_wake()
-            self._tts.speak(text)
+        # 念出来。播报期间暂停唤醒，免得把自己说的「伊芙」当成唤醒词。
+        # 要开播就别先唤醒：醒来又立刻暂停，多一次开关麦克风还可能误触发。
+        if not self._end_speech(text):
+            self._resume_wake()
 
     def _on_tts_finished(self, ok: bool) -> None:
         self._resume_wake()
@@ -1291,6 +1334,9 @@ class ChatWindow(QWidget):
 
     def _on_failed(self, message: str) -> None:
         self._streaming = False
+        # 出错就闭嘴，别让半句话继续念下去
+        self._tts_streaming = False
+        self._tts.cancel()
         # 出错时也不能让用户对着一颗球，把界面拉回来
         if self._collapsing:
             self._cancel_collapse()

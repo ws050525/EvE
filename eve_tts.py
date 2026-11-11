@@ -120,11 +120,10 @@ def main(argv: list[str] | None = None) -> int:
         print(f"已保存：{path}")
 
     if not args.no_play:
-        import sounddevice as sd
-
+        # 走和界面完全一样的播报路径（逐句切分 + 一路音频流），
+        # 这样"开头结尾念不全"能在命令行复现，不用开界面。
         print("播放…")
-        sd.play(samples, rate)
-        sd.wait()
+        tts.speak(args.text)
     return 0
 
 
