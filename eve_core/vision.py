@@ -1,4 +1,4 @@
-"""让看不了图的模型也能"看屏幕"：用本地 Qwen3-VL 当眼睛。
+﻿"""让看不了图的模型也能"看屏幕"：用本地 Qwen3-VL 当眼睛。
 
 背景：干活的档位现在跑云端模型（DeepSeek Flash），它不收图片；而桌面操作
 （"点搜索框""这一页的下拉在哪"）本质上需要看。本地那个 Qwen3-VL 有视觉，
@@ -15,34 +15,168 @@
 from __future__ import annotations
 
 import base64
+import ctypes
 import io
+import uuid
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 
-MAX_SIDE = 1600  # 送进模型的图先缩到这个尺寸，省 token 也更快
+MAX_SIDE = 1600  # 最长边上限
+MAX_PIXELS = 900_000  # 总像素上限：视觉模型的时间和 token 都跟它走
 MAX_BYTES = 4 * 1024 * 1024
+MIN_CROP = 240  # 裁出来的窗口小于这个尺寸就不用它（大概是误判）
+
+# 只截活动窗口时，图比全屏小得多，模型看得更准也更快。
+# DPI 必须说清楚：不说的话 GetWindowRect 给逻辑像素、ImageGrab 给物理像素，
+# 缩放屏上会裁偏。
+try:  # pragma: no cover - 只在 Windows 上生效
+    ctypes.windll.shcore.SetProcessDpiAwareness(2)
+except Exception:
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
 
 
-def capture(path: Path | None = None) -> Path:
-    """截全屏（多显示器也一起），存成 png 并返回路径。"""
+@dataclass
+class Shot:
+    """一张截图 + 它在屏幕上的位置（locate 换算坐标要用）。"""
+
+    path: Path
+    origin: tuple[int, int] = (0, 0)
+    size: tuple[int, int] = (0, 0)
+    window: str = ""
+
+    @property
+    def full_screen(self) -> bool:
+        return not self.window
+
+
+def _rect_of(hwnd: int) -> tuple[int, int, int, int] | None:
+    """窗口的可见边框（优先 DWM 的，去掉了不可见的阴影边）。"""
+    class RECT(ctypes.Structure):
+        _fields_ = [
+            ("left", ctypes.c_long),
+            ("top", ctypes.c_long),
+            ("right", ctypes.c_long),
+            ("bottom", ctypes.c_long),
+        ]
+
+    rect = RECT()
+    try:
+        dwm = ctypes.windll.dwmapi
+        # DWMWA_EXTENDED_FRAME_BOUNDS = 9
+        if dwm.DwmGetWindowAttribute(
+            ctypes.c_void_p(hwnd), ctypes.c_uint(9), ctypes.byref(rect), ctypes.sizeof(rect)
+        ) == 0 and rect.right > rect.left:
+            return rect.left, rect.top, rect.right, rect.bottom
+    except Exception:
+        pass
+
+    try:
+        if ctypes.windll.user32.GetWindowRect(
+            ctypes.c_void_p(hwnd), ctypes.byref(rect)
+        ):
+            return rect.left, rect.top, rect.right, rect.bottom
+    except Exception:
+        pass
+    return None
+
+
+def foreground_window() -> tuple[int, str, tuple[int, int, int, int]] | None:
+    """当前前台窗口：(hwnd, 标题, 矩形)。拿不到返回 None。"""
+    try:
+        user32 = ctypes.windll.user32
+        hwnd = int(user32.GetForegroundWindow())
+    except Exception:
+        return None
+    if not hwnd:
+        return None
+
+    length = 0
+    buffer = None
+    try:
+        length = int(user32.GetWindowTextLengthW(ctypes.c_void_p(hwnd)))
+        buffer = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(ctypes.c_void_p(hwnd), buffer, length + 1)
+    except Exception:
+        buffer = None
+    title = (buffer.value if buffer else "") or ""
+
+    bounds = _rect_of(hwnd)
+    if bounds is None:
+        return None
+    left, top, right, bottom = bounds
+    if right - left < MIN_CROP or bottom - top < MIN_CROP:
+        return None
+    # 桌面/任务栏这类壳窗口没有意义，当成"没窗口"处理，退回全屏
+    if title.strip() in {"Program Manager", "Windows 输入体验", ""}:
+        return None
+    return hwnd, title, (left, top, right, bottom)
+
+
+def _virtual_origin() -> tuple[int, int]:
+    """虚拟桌面左上角（多显示器时可能是负数）。"""
+    try:
+        user32 = ctypes.windll.user32
+        return (
+            int(user32.GetSystemMetrics(76)),  # SM_XVIRTUALSCREEN
+            int(user32.GetSystemMetrics(77)),  # SM_YVIRTUALSCREEN
+        )
+    except Exception:
+        return 0, 0
+
+
+def capture(
+    path: Path | None = None, full_screen: bool = False, folder: Path | None = None
+) -> Shot:
+    """截一张图。默认只截**活动窗口**，拿不到窗口信息时退回全屏。"""
     try:
         from PIL import ImageGrab
     except ImportError as exc:
         raise RuntimeError("缺少 Pillow，无法截图") from exc
 
     image = ImageGrab.grab(all_screens=True)
-    if max(image.width, image.height) > MAX_SIDE:
-        ratio = MAX_SIDE / float(max(image.width, image.height))
-        image = image.resize((int(image.width * ratio), int(image.height * ratio)))
+    base_origin = _virtual_origin()
+    origin = base_origin
+    window_title = ""
+
+    if not full_screen:
+        found = foreground_window()
+        if found is not None:
+            _hwnd, title, (left, top, right, bottom) = found
+            box = (
+                max(0, left - base_origin[0]),
+                max(0, top - base_origin[1]),
+                min(image.width, right - base_origin[0]),
+                min(image.height, bottom - base_origin[1]),
+            )
+            if box[2] - box[0] >= MIN_CROP and box[3] - box[1] >= MIN_CROP:
+                image = image.crop(box)
+                # 裁出来的图，左上角对应的屏幕坐标
+                origin = (box[0] + base_origin[0], box[1] + base_origin[1])
+                window_title = title
+
+    if max(image.width, image.height) > MAX_SIDE or image.width * image.height > MAX_PIXELS:
+        image, _scale = _fit(image)
 
     if path is None:
-        folder = Path(".tmp") / "vision"
-        folder.mkdir(parents=True, exist_ok=True)
-        path = folder / f"screen-{datetime.now():%Y%m%d-%H%M%S}.png"
+        base = Path(folder) if folder else Path(".tmp") / "vision"
+        base.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        # 同一秒内可能截好几张（读一次、定位一次），加随机后缀免得互相覆盖
+        path = base / f"shot-{stamp}-{uuid.uuid4().hex[:4]}.png"
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     image.save(path)
-    return path
+
+    return Shot(
+        path=path,
+        origin=origin,
+        size=(image.width, image.height),
+        window=window_title,
+    )
 
 
 def pick_vision_model(cfg, preferred: str = "") -> str:
@@ -65,19 +199,29 @@ def _data_url(path: Path) -> str:
     return "data:image/png;base64," + base64.b64encode(raw).decode("ascii")
 
 
-def _prepare(path: Path, max_side: int = MAX_SIDE) -> tuple[str, float]:
-    """把图缩到 max_side 以内并编码，返回 (data_url, 缩放比例)。
+def _fit(image, max_side: int = MAX_SIDE, max_pixels: int = MAX_PIXELS):
+    """按最长边和总像素两个上限缩放。视觉模型的时间基本跟像素数成正比。"""
+    scale = 1.0
+    longest = max(image.width, image.height)
+    if longest > max_side:
+        scale = max_side / float(longest)
+    pixels = image.width * image.height
+    if pixels and pixels * scale * scale > max_pixels:
+        scale = min(scale, (max_pixels / float(pixels)) ** 0.5)
+    if scale >= 0.999:
+        return image, 1.0
+    return image.resize((max(1, int(image.width * scale)), max(1, int(image.height * scale)))), scale
 
-    缩放比例是给坐标定位用的：模型说的是"图上的像素"，除以比例才是屏幕坐标。
+
+def _prepare(path: Path, max_side: int = MAX_SIDE) -> tuple[str, float]:
+    """把图缩到上限内并编码，返回 (data_url, 缩放比例)。
+
+    缩放比例是给坐标定位用的：模型说的是"图上的像素"，除以比例才是截图坐标。
     """
     from PIL import Image
 
     image = Image.open(path).convert("RGB")
-    longest = max(image.width, image.height)
-    scale = 1.0
-    if longest > max_side:
-        scale = max_side / float(longest)
-        image = image.resize((int(image.width * scale), int(image.height * scale)))
+    image, scale = _fit(image, max_side=max_side)
     buffer = io.BytesIO()
     image.save(buffer, format="JPEG", quality=88)
     encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
@@ -130,10 +274,17 @@ LOCATE_PROMPT = """在这张屏幕截图里找：{target}
 - 不确定也要给"最像的"那个，不要编造不存在的元素。"""
 
 
-def locate(
-    runtime, cfg, image_path: Path, target: str, model_id: str = ""
-) -> dict:
-    """问"某个东西在屏幕哪个坐标"，返回 {found, x, y, what}（坐标已换算成屏幕坐标）。"""
+def locate(runtime, cfg, shot, target: str, model_id: str = "") -> dict:
+    """问"某个东西在屏幕哪个坐标"，返回 {found, x, y, what}。
+
+    `shot` 可以是 Shot（裁活动窗口时带 origin），也可以是纯路径（按全屏算）。
+    坐标最后换算成**真实屏幕坐标**：先除以缩放比例，再加上裁剪原点。
+    """
+    if isinstance(shot, Shot):
+        image_path, origin = shot.path, shot.origin
+    else:
+        image_path, origin = Path(shot), (0, 0)
+
     model_id = pick_vision_model(cfg, model_id)
     if not model_id:
         raise RuntimeError("没有可用的视觉模型（[models.*] 里要有 mmproj 的 GGUF）")
@@ -165,10 +316,13 @@ def locate(
         y = float(data.get("y") or 0)
     except (TypeError, ValueError):
         x = y = 0.0
-    # 图被缩过：换算回真实屏幕坐标
+    # 图被缩过：先还原到"截图里的像素"
     if scale and scale != 1.0:
         x = x / scale
         y = y / scale
+    # 截图是裁出来的：再加回左上角的屏幕坐标
+    x += origin[0]
+    y += origin[1]
     return {
         "found": found and (x > 0 or y > 0),
         "x": int(round(x)),

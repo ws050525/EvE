@@ -96,6 +96,69 @@ def image_read_requires_an_existing_file():
     assert out.startswith("[error]"), out
 
 
+@case
+def locate_maps_image_coordinates_back_to_the_screen():
+    """只截活动窗口时，模型给的是"图上的像素"，要加上裁剪原点才是屏幕坐标。"""
+    from PIL import Image
+
+    from eve_core import vision
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "shot.png"
+        Image.new("RGB", (400, 300), "black").save(path)
+
+        class FakeProvider:
+            def chat(self, messages, tools=None, **kwargs):
+                return SimpleNamespace(
+                    content='{"found": true, "x": 100, "y": 200, "what": "输入框"}'
+                )
+
+        class FakeRuntime:
+            def provider_for(self, model_id):
+                return FakeProvider()
+
+        cfg = SimpleNamespace(
+            models={"v": SimpleNamespace(mmproj="models/mmproj.gguf")},
+            vision_model="",
+        )
+        shot = vision.Shot(path=path, origin=(1000, 500), size=(400, 300), window="窗口")
+        hit = vision.locate(FakeRuntime(), cfg, shot, "输入框")
+
+        assert hit["found"] is True, hit
+        # 400x300 没有触发缩放，所以就是图上坐标 + 原点
+        assert hit["x"] == 1100 and hit["y"] == 700, hit
+        assert shot.full_screen is False
+
+
+@case
+def fit_respects_the_pixel_budget():
+    from PIL import Image
+
+    from eve_core import vision
+
+    big = Image.new("RGB", (2560, 1600), "black")
+    fitted, scale = vision._fit(big)
+    assert fitted.width * fitted.height <= vision.MAX_PIXELS * 1.02, fitted.size
+    assert 0 < scale < 1
+    assert max(fitted.width, fitted.height) <= vision.MAX_SIDE
+
+    small = Image.new("RGB", (320, 240), "black")
+    same, ratio = vision._fit(small)
+    assert ratio == 1.0 and same.size == (320, 240)
+
+
+@case
+def capture_returns_geometry():
+    """真截一张：默认裁活动窗口，拿不到窗口就退回全屏，两种情况都要有 origin。"""
+    from eve_core import vision
+
+    with tempfile.TemporaryDirectory() as tmp:
+        shot = vision.capture(path=Path(tmp) / "a.png", folder=Path(tmp))
+        assert shot.path.exists()
+        assert shot.size[0] > 0 and shot.size[1] > 0
+        assert isinstance(shot.origin, tuple) and len(shot.origin) == 2
+
+
 def main() -> int:
     failed = 0
     for fn in CHECKS:

@@ -26,14 +26,14 @@ def _screen_read(args: dict[str, Any], runtime, cfg) -> str:
     if runtime is None:
         return "[error] 视觉能力没接上（缺少 runtime）"
     try:
-        path = vision.capture()
+        shot = vision.capture(full_screen=bool(args.get("full_screen")))
     except Exception as exc:
         return f"[error] 截图失败：{type(exc).__name__}: {exc}"
     try:
         answer = vision.ask(
             runtime,
             cfg,
-            path,
+            shot.path,
             question,
             max_tokens=int(args.get("max_tokens") or 600),
             model_id=str(args.get("model") or ""),
@@ -42,7 +42,8 @@ def _screen_read(args: dict[str, Any], runtime, cfg) -> str:
         return f"[error] 看图失败：{type(exc).__name__}: {exc}"
     if not answer:
         return "[error] 视觉模型没有给出内容"
-    return f"[ok] 截图：{path}\n{answer}"
+    where = f"活动窗口「{shot.window}」" if shot.window else "整个屏幕"
+    return f"[ok] 看的是{where}（截图 {shot.path}）\n{answer}"
 
 
 def _image_read(args: dict[str, Any], runtime, cfg) -> str:
@@ -79,19 +80,21 @@ def _screen_locate(args: dict[str, Any], runtime, cfg) -> str:
     if runtime is None:
         return "[error] 视觉能力没接上（缺少 runtime）"
     try:
-        path = vision.capture()
+        shot = vision.capture(full_screen=bool(args.get("full_screen")))
     except Exception as exc:
         return f"[error] 截图失败：{type(exc).__name__}: {exc}"
     try:
         hit = vision.locate(
-            runtime, cfg, path, target, model_id=str(args.get("model") or "")
+            runtime, cfg, shot, target, model_id=str(args.get("model") or "")
         )
     except Exception as exc:
         return f"[error] 定位失败：{type(exc).__name__}: {exc}"
+    where = f"活动窗口「{shot.window}」" if shot.window else "整个屏幕"
     if not hit.get("found"):
-        return f"[error] 屏幕上没找到「{target}」：{hit.get('what') or '看不清'}"
+        return f"[error] {where}里没找到「{target}」：{hit.get('what') or '看不清'}"
     return (
-        f"[ok] 「{target}」在 ({hit['x']}, {hit['y']})——{hit.get('what') or '已定位'}\n"
+        f"[ok] 「{target}」在 ({hit['x']}, {hit['y']})——{hit.get('what') or '已定位'}"
+        f"（看的是{where}）\n"
         f"下一步可以直接 mouse_click({hit['x']}, {hit['y']})；"
         f"位置不对就再 locate 一次或先 screen_read 看看整个界面。"
     )
@@ -110,11 +113,10 @@ def register_vision(registry: ToolRegistry, cfg=None, runtime=None) -> None:
         ToolSpec(
             name="screen_read",
             description=(
-                "【看图】截一张全屏图，让本地视觉模型描述界面（按钮/输入框在哪、现在是什么页面）。"
+                "【看图】截**当前活动窗口**，让本地视觉模型描述界面（按钮/输入框在哪、现在是什么页面）。"
                 f"{hint}。"
-                "要操作桌面软件但你不知道界面长什么样时，先调它；"
-                "拿到描述再用 mouse_click / key_type 动手。"
-                "第一次调用会把本地视觉引擎拉起来，等几秒。"
+                "要看整个桌面（多个窗口之间的关系）就传 full_screen=true。"
+                "操作桌面软件但不知道界面长什么样时先调它；拿到描述再用 mouse_click / key_type。"
             ),
             parameters={
                 "type": "object",
@@ -122,7 +124,11 @@ def register_vision(registry: ToolRegistry, cfg=None, runtime=None) -> None:
                     "question": {
                         "type": "string",
                         "description": "你想知道什么。例如：搜索框在哪个位置？页面中间显示什么？",
-                    }
+                    },
+                    "full_screen": {
+                        "type": "boolean",
+                        "description": "true = 截整个屏幕（默认只截活动窗口，更快更准）",
+                    },
                 },
             },
             handler=lambda args: _screen_read(args, runtime, cfg),
@@ -133,7 +139,7 @@ def register_vision(registry: ToolRegistry, cfg=None, runtime=None) -> None:
         ToolSpec(
             name="screen_locate",
             description=(
-                "【看图定位】在屏幕上找某个东西，直接给**可点击的屏幕坐标**。"
+                "【看图定位】在**当前活动窗口**里找某个东西，直接给可点击的屏幕坐标。"
                 f"{hint}。"
                 "要找“搜索框”“播放按钮”“登录按钮”这类具体控件时用它，"
                 "拿到坐标再 mouse_click —— 比让模型猜坐标靠谱得多。"
@@ -144,7 +150,11 @@ def register_vision(registry: ToolRegistry, cfg=None, runtime=None) -> None:
                     "target": {
                         "type": "string",
                         "description": "要找的东西，用界面上看得见的说法，例如“搜索框”“播放按钮”",
-                    }
+                    },
+                    "full_screen": {
+                        "type": "boolean",
+                        "description": "true = 在整个屏幕里找（默认只找活动窗口）",
+                    },
                 },
                 "required": ["target"],
             },

@@ -1,4 +1,4 @@
-﻿# EVE 记忆报告（截至 v0.9.0）
+﻿# EVE 记忆报告（截至 v0.9.1）
 
 > 给下一个对话用：读完这份就能接手，不用翻聊天记录。
 > 这份是**对话总结**，不是交接清单；上一版留下的 `docs/HANDOFF.md` 已删（内容并进这份）。
@@ -10,7 +10,7 @@
 一个本地优先的个人 agent：**本地模型陪聊 + 操作电脑，云端模型干重活**。
 
 - 仓库：https://github.com/ws050525/EvE （分支 `main`）
-- 当前版本：`0.9.0`（`eve_core/version.py`），最新标签 `v0.9.0`
+- 当前版本：`0.9.1`（`eve_core/version.py`），最新标签 `v0.9.1`
 - 工作目录：`D:\1\EVE`
 
 ## 2. 环境（容易踩的坑）
@@ -56,7 +56,7 @@ eve_ui/     界面
   app.py 入口与开发期开关；main_window 主窗；chat_view 气泡；mobius 莫比乌斯；orb 悬浮球
   bridge.py agent 跑在 QThread；voice.py 语音线程；tts.py 播报线程；theme.py 配色
 eve_cli.py  eve_gui.py  eve_tts.py（播调试听工具）  tools/（模型下载、播报预览）
-tests/      14 个文件 / 209 项，全部不需要模型
+tests/      14 个文件 / 212 项，全部不需要模型
 ```
 
 ## 4. 三个档位
@@ -88,6 +88,7 @@ tests/      14 个文件 / 209 项，全部不需要模型
   见第 12 节；顺手清掉 537MB 没用的音色和 `.tmp/`。
 - **0.6.10**：声音不再发硬——后处理从"提亮优先"改成"柔和优先"，语速 1.12→1.05，
   句间留 70ms 换气，见 12.6 节。
+- **0.9.1**：视觉默认只截活动窗口 + 限 image tokens，单次 15s→6–9s，见 16.6。
 - **0.9.0**：跨任务共享笔记、浏览器多标签页、本地视觉当"眼睛"（screen_read / screen_locate），见第 16 节。
 - **0.8.0**：浏览器真交互（Edge CDP，零下载）、多任务并行（最多 3 个）、断点列表，见第 15 节。
 - **0.7.1**：断点续跑 + 多文件资料（`checkpoint.py` / `project_init` / `project_status`），见第 14 节。
@@ -177,7 +178,7 @@ tests/      14 个文件 / 209 项，全部不需要模型
 & 'D:\python\python.exe' tests\test_voice.py # 单个测试
 ```
 
-测试共 14 个文件 / 209 项：persona / context / workspace / cost / apps / office / voice /
+测试共 14 个文件 / 212 项：persona / context / workspace / cost / apps / office / voice /
 agent_loop / planning / checkpoint / project（语音 50 项；计划 11 项；断点 7 项；多文件 8 项）。
 
 下载语音模型（SenseVoice + silero VAD）：
@@ -190,7 +191,7 @@ agent_loop / planning / checkpoint / project（语音 50 项；计划 11 项；�
 ## 11. 给下一个对话的开场建议
 
 > 读 `docs/MEMORY.md`。语音（第 12 节）和 agent 能力（第 13 节）两个节点都已完成，
-> 测试 209/209，代码在本地和 GitHub 上都是最新。
+> 测试 212/212，代码在本地和 GitHub 上都是最新。
 > 剩下的主要是**真人验收**：喊「伊芙」听播报、开完全权限跑一个真实复杂任务、
 > 看长任务中途按停止会不会干净退出。
 > 然后是打包（PyInstaller one-folder，模型外置）。
@@ -513,3 +514,38 @@ Edge 自带一堆扩展后台页，不过滤的话序号全乱。
 1. 视觉模型换更小的（如 Qwen2.5-VL-3B int4）或只截活动窗口，把单次压到 3–5s；
 2. 给桌面档更长的步数（现在 20，实测要 30+）；
 3. 优先用快捷键（Ctrl+F 这类）绕开"找控件"，把视觉留给验证。
+
+### 16.6 只截活动窗口（v0.9.1）
+
+用户问"只截活动窗口效果怎么样"，实测结论：**值得，但要配合限 image tokens**。
+
+做法：
+- `foreground_window()` 用 `GetForegroundWindow` + `DwmGetWindowAttribute(扩展边框)`
+  拿当前窗口的可见矩形（不是 `GetWindowRect`，那个含不可见阴影边）。
+- 整屏抓一次再**裁**（PIL `ImageGrab(all_screens=True)`），不是按窗口重抓——
+  这样多显示器、负坐标都天然对。
+- `Shot` 记住裁剪原点，`locate()` 换算坐标时 `x = 图坐标 / 缩放比 + 原点`。
+  不换算的话点下去会偏移（和全屏时代一样的坑，只是从"缩放"变成"缩放+偏移"）。
+- 拿不到窗口（桌面壳、太小、无标题）就退回全屏。
+
+**DPI 是坑**：进程不说清的话 `GetWindowRect` 给逻辑像素、`ImageGrab` 给物理像素，
+缩放屏上会裁偏。模块导入时调一次 `SetProcessDpiAwareness(2)`，GUI 和 CLI 都一致。
+
+数字（同一台机，2560×1600，窗口占右半屏）：
+
+| 项 | 全屏 | 只截活动窗口 |
+| --- | --- | --- |
+| 图片像素 | 2560×1600 → 缩到 1600×1000 | 1280×1600 → 缩到 848×1060 |
+| 送模型 | 1.6MP | 0.9MP |
+| 单次耗时 | 13–15s | 13–15s（**没变**） |
+| after `--image-max-tokens 256` | — | **6.0–9.5s** |
+
+**关键发现**：像素减半**不省时间**——llama.cpp 的 mtmd 给每张图一个固定 token 预算，
+时间主要花在那上面。改 `[engines.llamacpp] extra_args` 加 `--image-max-tokens 256`
+才真正把 15s 压到 6–9s（128 更快但坐标更糊，256 是甜点）。
+
+精度：大目标准（"顶栏的 EVE 文字"→ (1367,18)），小控件只能到大致区域
+（"发送按钮"偏几十像素）。所以**别指望它精准点小按钮**，能键盘就键盘。
+
+另外修了两个小问题：截图文件名只到秒，同一秒截两张会互相覆盖（加随机后缀）；
+`[vision] model` 留空时自动挑第一个带 mmproj 的模型。
