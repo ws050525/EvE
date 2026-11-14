@@ -699,6 +699,51 @@ def voice_fx_survives_tiny_input():
     assert len(out) == 0
 
 
+@case
+def voice_fx_softens_instead_of_brightening():
+    """后处理的目标是"别硬"：4.5kHz 以上应该被压下去，不是被提亮。
+
+    旧版给 3.2kHz 以上加了 30% 存在感，听感发燥发刺——这条用例就是防它回潮。
+    """
+    import numpy as np
+
+    from eve_core.tts import VoiceFx, apply_voice_fx
+
+    rate = 44100
+    rng = np.random.default_rng(0)
+    noise = (rng.standard_normal(rate) * 0.15).astype("float32")
+
+    def high_ratio(x):
+        spectrum = np.abs(np.fft.rfft(np.asarray(x, dtype="float64")))
+        freqs = np.fft.rfftfreq(len(x), 1.0 / rate)
+        return float(spectrum[freqs > 4500].sum() / (spectrum.sum() + 1e-12))
+
+    out = apply_voice_fx(noise, rate, VoiceFx(enabled=True))
+    assert high_ratio(out) < high_ratio(noise), (high_ratio(out), high_ratio(noise))
+
+
+@case
+def voice_fx_keeps_the_crest_factor():
+    """压缩不能压太狠：峰均比压没了就是"压扁"，听着发硬。"""
+    import numpy as np
+
+    from eve_core.tts import VoiceFx, apply_voice_fx
+
+    rate = 22050
+    t = np.arange(rate) / rate
+    # 响一段、轻一段，模拟句子里自然的强弱
+    envelope = np.where(t < 0.5, 0.9, 0.12)
+    signal = (envelope * np.sin(2 * np.pi * 220 * t)).astype("float32")
+
+    def crest(x):
+        x = np.asarray(x, dtype="float64")
+        return float(np.abs(x).max() / (np.sqrt((x**2).mean()) + 1e-12))
+
+    out = apply_voice_fx(signal, rate, VoiceFx(enabled=True))
+    before, after = crest(signal), crest(out)
+    assert after > before * 0.5, (before, after)
+
+
 def main() -> int:
     failed = 0
     for fn in CHECKS:

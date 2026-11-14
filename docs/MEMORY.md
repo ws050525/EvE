@@ -1,4 +1,4 @@
-# EVE 记忆报告（截至 v0.6.9）
+# EVE 记忆报告（截至 v0.6.10）
 
 > 给下一个对话用：读完这份就能接手，不用翻聊天记录。
 > 这份是**对话总结**，不是交接清单；上一版留下的 `docs/HANDOFF.md` 已删（内容并进这份）。
@@ -10,7 +10,7 @@
 一个本地优先的个人 agent：**本地模型陪聊 + 操作电脑，云端模型干重活**。
 
 - 仓库：https://github.com/ws050525/EvE （分支 `main`）
-- 当前版本：`0.6.9`（`eve_core/version.py`），最新标签 `v0.6.9`
+- 当前版本：`0.6.10`（`eve_core/version.py`），最新标签 `v0.6.10`
 - 工作目录：`D:\1\EVE`
 
 ## 2. 环境（容易踩的坑）
@@ -83,6 +83,8 @@ tests/      8 个文件 / 136 项，全部不需要模型
 - **0.6.7**：`office_write`（直接生成 pptx/docx/xlsx）、最高权限开关、工作档补齐桌面工具。
 - **0.6.9**：语音两处大修（播报改成"一路流 + 流式切句"，识别换 SenseVoice + 双门限 VAD），
   见第 12 节；顺手清掉 537MB 没用的音色和 `.tmp/`。
+- **0.6.10**：声音不再发硬——后处理从"提亮优先"改成"柔和优先"，语速 1.12→1.05，
+  句间留 70ms 换气，见 12.6 节。
 
 ## 6. 关键决策（别推翻）
 
@@ -125,6 +127,12 @@ tests/      8 个文件 / 136 项，全部不需要模型
 | `vad_engine` | **新**：`energy`（默认）/ `silero`（模型断句，嘈杂环境更稳） | energy |
 | `silero_vad_model` | **新**：silero 模型路径，`tools\fetch_voice_models.py --vad` 下载 | models/voice/silero_vad.onnx |
 | `asr_model` / `asr_fallbacks` | **新**：识别模型（默认 SenseVoice），第一个存在的目录生效 | 见 config.toml |
+| `tts_speed` | 语速，太快显得急、发硬 | 1.05 |
+| `tts_fx_warmth` | **新**：低频厚度 | 0.16 |
+| `tts_fx_clarity` | **新**：中高频存在感，大了发燥 | 0.06 |
+| `tts_fx_deharsh` | **新**：4.5kHz 以上柔化，大了发闷 | 0.22 |
+| `tts_fx_space` | **新**：空间感 | 0.06 |
+| `tts_fx_compression` | **新**：压缩，大了压扁发硬 | 0.30 |
 
 **要动代码时**（`eve_core/voice.py`）：
 
@@ -161,8 +169,8 @@ tests/      8 个文件 / 136 项，全部不需要模型
 & 'D:\python\python.exe' tests\test_voice.py # 单个测试
 ```
 
-测试共 8 个文件 / 147 项：persona / context / workspace / cost / apps / office / voice / agent_loop
-（语音 48 项；本轮新加流式切句、双门限、模型家族识别、模型回退等 11 条，已全绿）。
+测试共 8 个文件 / 149 项：persona / context / workspace / cost / apps / office / voice / agent_loop
+（语音 50 项；含"后处理必须压高频、不能压扁动态"两条防回潮用例）。
 
 下载语音模型（SenseVoice + silero VAD）：
 
@@ -173,8 +181,9 @@ tests/      8 个文件 / 136 项，全部不需要模型
 
 ## 11. 给下一个对话的开场建议
 
-> 读 `docs/MEMORY.md`。语音两处大修已完成并通过 147/147 测试（第 12 节），
-> 剩下的主要是**真人验收**。
+> 读 `docs/MEMORY.md`。语音两处大修 + 音色柔化都已完成（第 12 节），测试 149/149，
+> 代码在本地和 GitHub 上都是最新。
+> 剩下的主要是**真人验收**（喊「伊芙」、说长指令、听播报）。
 > 然后：① 跨工具工作流端到端（查资料 → 写文件 → 打开软件写进去）；② 打包。
 
 ## 12. 语音两处大修（v0.6.9，已验证并提交）
@@ -247,4 +256,29 @@ tests/      8 个文件 / 136 项，全部不需要模型
 1. **真人验收**：喊「伊芙」→ 说长指令 → 听播报开头结尾、看是否跟得上文字。
 2. 真人说话再试，听不准就把 `vad_engine` 换成 `silero`（模型已下载）。
 3. `docs/design-v2-ui-voice.md` 的 §5.2/§8.1 矛盾仍未处理。
-4. 改动已提交（`v0.6.9`）并打了标签。
+4. 改动已提交（`v0.6.9`）并打了标签，已 push 到 GitHub。
+
+### 12.6 声音发硬（v0.6.10）
+
+用户反馈"声音太硬、语气不自然"。根因不在模型，在**后处理链**：上一版是"清楚优先"，
+给 3.2kHz 以上加 30% 存在感、压缩 0.6、再把峰值顶到 0.85 —— 听着发燥、发刺、没呼吸。
+
+改法（`eve_core/tts.py` 的 `apply_voice_fx`）：
+
+| 环节 | 旧 | 新 |
+| --- | --- | --- |
+| 低频厚度 | 220Hz ×0.12 | 200Hz ×0.16 |
+| 中高频存在感 | 3.2kHz 以上 +30% | 2.5–4.5kHz 只 +6% |
+| 4.5kHz 以上 | 提亮 | **压 22%**（新增 `deharsh`） |
+| 压缩 | 0.6，门限 0.12，比例 2.8:1 | 0.30，门限 0.18，比例 1.6:1 |
+| 收尾 | 硬削波 | tanh 软限幅 |
+| 语速 | 1.12 | 1.05 |
+| 句间 | 紧贴（只有合成空档） | 固定 70ms 换气（`PlaybackSession.SENTENCE_GAP_MS`） |
+
+客观指标（同一句话，`tools/tts_preview.py` 可复现）：谱心 **3008Hz → 2415Hz**，
+4.5kHz 以上能量 **29.0% → 20.4%**，音量不变（RMS -15.6dB / -15.1dB），峰均比不降（不压扁）。
+
+五个旋钮都在 `config.toml [voice]`：`tts_fx_warmth / clarity / deharsh / space / compression`，
+`eve_tts.py` 也有同名命令行参数（`--deharsh --compression ...`）。想更柔就把 `deharsh` 往上、
+`clarity`/`compression` 往下；`tools/tts_preview.py` 会把"当前 / 更柔 / 干声 / 各音色"渲染成
+wav 放到 `.tmp/preview/` 供试听。

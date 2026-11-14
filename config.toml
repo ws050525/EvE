@@ -46,15 +46,23 @@ vad_engine = "energy"
 silero_vad_model = "models/voice/silero_vad.onnx"
 
 # 播报：离线 VITS 中文女声。界面上「点模型名 → 选择音色」可以换，换完会记到 .data/voice.json。
-# melo 是最自然的一个（44.1kHz 播报女声）；备选 theresa / eula / keqing / fanchen-C。
+# melo 是最自然的一个（44.1kHz 播报女声）；备选 theresa / eula / keqing。
 tts_model = "models/voice/vits-melo-tts-zh_en"
 tts_enabled = true
-tts_speed = 1.12             # 0.5–2.0；1.0 是模型原始语速，实测偏慢
+tts_speed = 1.05             # 0.5–2.0；1.0 是模型原始语速。太快会显得急、发硬
 tts_volume = 1.0             # 0–1.5
 tts_speaker = 0              # 单人模型只有一个音色
 tts_noise_scale = 0.667      # 语气起伏：调大更有感情，超过 0.9 容易沙哑
 tts_noise_scale_w = 0.8      # 停顿随机性：调大更自然，太大节奏会乱
-tts_fx = true                # 「AI 音色」后处理：轻压缩 + 提亮 + 一点空间感
+
+# 「AI 音色」后处理。上一版是"清楚优先"，提亮 0.30 + 压缩 0.60，听感发燥发硬；
+# 现在是"柔和优先"：4.5kHz 以上压一点（deharsh），压缩放轻，起伏留着才自然。
+tts_fx = true
+tts_fx_warmth = 0.16         # 低频厚度 0–0.3，大一点更暖
+tts_fx_clarity = 0.06        # 中高频存在感 0–0.6，大了发燥
+tts_fx_deharsh = 0.22        # 齿音柔化 0–0.6，大了发闷
+tts_fx_space = 0.06          # 空间感 0–0.3，大了发空
+tts_fx_compression = 0.30    # 压缩 0–1，大了压扁、发硬
 
 # ---------- 推理引擎（本地模型的运行容器）----------
 

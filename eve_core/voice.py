@@ -173,7 +173,13 @@ class VoiceSettings:
     tts_volume: float = 1.0
     tts_noise_scale: float = 0.667  # 语气起伏，越大越"有感情"，太高会沙哑
     tts_noise_scale_w: float = 0.8  # 停顿长短的随机性
-    tts_fx: bool = True  # 「AI 音色」后处理：轻压缩 + 提亮 + 一点空间感
+    tts_fx: bool = True  # 「AI 音色」后处理（柔和优先，别硬）
+    # 后处理的五个旋钮：想更柔就往下调 clarity / compression，往上调 deharsh
+    tts_fx_warmth: float = 0.16  # 低频厚度
+    tts_fx_clarity: float = 0.06  # 中高频存在感（大了发燥）
+    tts_fx_deharsh: float = 0.22  # 4.5kHz 以上柔化（压齿音）
+    tts_fx_space: float = 0.06  # 空间感
+    tts_fx_compression: float = 0.30  # 压缩（大了"压扁"、发硬）
 
     def audio_config(self) -> "AudioConfig":
         return AudioConfig(

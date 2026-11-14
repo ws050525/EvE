@@ -403,12 +403,22 @@ class ChatWindow(QWidget):
             self._wake.failed.connect(lambda msg: self._set_status(msg))
 
         self._tts_enabled = bool(self._voice_settings.tts_enabled)
+        voice = self._voice_settings
         self._tts = TtsBridge(
             TtsSettings(
-                model=self._voice_settings.tts_model,
-                speed=self._voice_settings.tts_speed,
-                speaker=self._voice_settings.tts_speaker,
+                model=voice.tts_model,
+                speed=voice.tts_speed,
+                speaker=voice.tts_speaker,
                 enabled=self._tts_enabled,
+                volume=voice.tts_volume,
+                noise_scale=voice.tts_noise_scale,
+                noise_scale_w=voice.tts_noise_scale_w,
+                fx=voice.tts_fx,
+                warmth=voice.tts_fx_warmth,
+                clarity=voice.tts_fx_clarity,
+                deharsh=voice.tts_fx_deharsh,
+                space=voice.tts_fx_space,
+                compression=voice.tts_fx_compression,
             ),
             self,
         )

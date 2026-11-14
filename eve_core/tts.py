@@ -224,6 +224,7 @@ class PlaybackSession:
     LEAD_MS = 120  # 开头垫静音：设备启动期吃掉的声音就落在这段静音里
     TAIL_MS = 180  # 结尾补静音：留出余量，尾音不会被关流掐掉
     GAP_BLOCK_MS = 20  # 等下一句时按 20ms 填静音，避免欠载的"咔"
+    SENTENCE_GAP_MS = 70  # 句与句之间留一口气：贴太紧会显得急、听着"硬"
 
     def __init__(self, engine, on_start=None, on_done=None, on_error=None):
         self.engine = engine
@@ -371,6 +372,9 @@ class PlaybackSession:
                     stream = self._open_stream(sd, rate)
                     if not played and self._on_start is not None:
                         self._on_start()
+                elif played:
+                    # 两句紧贴着放会像抢话；中间留一口气，听感松一点
+                    stream.write(_silence(rate, self.SENTENCE_GAP_MS))
                 stream.write(samples)
                 played = True
         except Exception as exc:
@@ -433,23 +437,35 @@ class TtsSettings:
     noise_scale: float = 0.667
     noise_scale_w: float = 0.8
     fx: bool = True
+    warmth: float = 0.16
+    clarity: float = 0.06
+    deharsh: float = 0.22
+    space: float = 0.06
+    compression: float = 0.30
 
 
 # ---------- 「AI 音色」后处理 ----------
 #
-# 三条链，都很轻，加起来只是让声音更"贴耳、稳、清楚"：
-#   1. 低切一点浊音、给中高频加存在感 → 吐字更清楚
-#   2. 轻压缩 → 音量起伏收窄，听感更"稳"，像录音棚里出来的
-#   3. 很短的混响 → 有空间感但不糊，接近"就在你耳边"的效果
+# 目标只有一个：**别硬**。
+#
+# 上一版是"清楚优先"——给 3.2kHz 以上加了 30% 的存在感，再压得很紧。听感上
+# 就是发燥、发刺、没有呼吸，像在对着扩音器说话。现在改成"柔和优先"：
+#   1. 低频补一点厚度（200Hz 以下），声音有身体，不是纸片
+#   2. 4.5kHz 以上**压一点**（deharsh）而不是加，齿音和气声就收住了
+#   3. 2.5–4.5kHz 只加一点点存在感，保证吐字还清楚
+#   4. 压缩放轻：起伏留着才自然，压扁了一定发硬
+#   5. 空间感再收一点，混响多了会显得"空、假"
+#   6. 收尾用软限幅（tanh）代替硬削波，峰值附近不会突然变方
 
 
 @dataclass
 class VoiceFx:
     enabled: bool = True
-    warmth: float = 0.12  # 低频厚度（0–0.3）
-    clarity: float = 0.30  # 中高频存在感（0–0.6）
-    space: float = 0.10  # 空间感混入比例（0–0.3）
-    compression: float = 0.6  # 压缩强度（0–1）
+    warmth: float = 0.16  # 低频厚度（0–0.3）
+    clarity: float = 0.06  # 中高频存在感（0–0.6）；大了就发燥
+    deharsh: float = 0.22  # 4.5kHz 以上柔化（0–0.6）；压齿音
+    space: float = 0.06  # 空间感混入比例（0–0.3）
+    compression: float = 0.30  # 压缩强度（0–1）；大了就"压扁"、没呼吸
 
 
 def _lowpass(x, rate: int, cutoff: float):
@@ -463,8 +479,16 @@ def _lowpass(x, rate: int, cutoff: float):
     return np.convolve(x, kernel, mode="same")
 
 
-def _compress(x, rate: int, amount: float):
-    """软压缩：超过门限的部分按比例压，整体再补一点增益。"""
+def _band(x, rate: int, low_hz: float, high_hz: float):
+    """取一段频带：low_hz 以上、high_hz 以下。"""
+    return _lowpass(x, rate, high_hz) - _lowpass(x, rate, low_hz)
+
+
+def _compress(x, rate: int, amount: float, threshold: float = 0.18):
+    """软压缩：超过门限的部分按比例压，并补一点增益。
+
+    门限抬高、比例放低之后，句子内部的强弱起伏基本还在——那是"自然"的来源。
+    """
     import numpy as np
 
     amount = max(0.0, min(1.0, amount))
@@ -472,12 +496,11 @@ def _compress(x, rate: int, amount: float):
         return x
 
     envelope = _lowpass(np.abs(x), rate, 60.0)
-    threshold = 0.12
-    ratio = 1.0 + 3.0 * amount
+    ratio = 1.0 + 2.0 * amount
     gain = np.ones_like(envelope)
     loud = envelope > threshold
     gain[loud] = (threshold / envelope[loud]) ** (1.0 - 1.0 / ratio)
-    return x * gain
+    return x * gain * (1.0 + 0.3 * amount)
 
 
 def _reverb(x, rate: int, mix: float):
@@ -500,6 +523,15 @@ def _reverb(x, rate: int, mix: float):
     return (1.0 - mix) * x + mix * wet
 
 
+def _soft_clip(y, ceiling: float = 0.96):
+    """软限幅：峰值附近圆滑过渡，不会像硬 clip 那样突然变方（那是"炸"的来源）。"""
+    import numpy as np
+
+    ceiling = max(0.2, float(ceiling))
+    y = np.asarray(y, dtype="float32")
+    return (np.tanh(y / ceiling) * ceiling).astype("float32")
+
+
 def _edge_fade(samples, rate: int, ms: float = 8.0):
     """首尾各做几毫秒淡入淡出。
 
@@ -520,7 +552,7 @@ def _edge_fade(samples, rate: int, ms: float = 8.0):
 
 
 def apply_voice_fx(samples, rate: int, fx: VoiceFx | None = None):
-    """把合成出来的干声过一遍「AI 音色」处理。"""
+    """把合成出来的干声过一遍「AI 音色」处理（柔和优先）。"""
     import numpy as np
 
     fx = fx or VoiceFx()
@@ -528,19 +560,23 @@ def apply_voice_fx(samples, rate: int, fx: VoiceFx | None = None):
         return samples
 
     y = np.asarray(samples, dtype="float32")
-    low = _lowpass(y, rate, 220.0)
-    y = y + fx.warmth * low
 
-    high = y - _lowpass(y, rate, 3200.0)
-    y = y + fx.clarity * high
+    # 1. 厚度：200Hz 以下补一点，声音有身体
+    y = y + fx.warmth * _lowpass(y, rate, 200.0)
 
+    # 2. 存在感：只给 2.5–4.5kHz 加一点点，保证字清楚
+    y = y + fx.clarity * _band(y, rate, 2500.0, 4500.0)
+
+    # 3. 去刺：4.5kHz 以上压下去，齿音和气声就收住了
+    if fx.deharsh > 0:
+        y = y - fx.deharsh * (y - _lowpass(y, rate, 4500.0))
+
+    # 4. 轻压缩 + 5. 一点空间
     y = _compress(y, rate, fx.compression)
     y = _reverb(y, rate, fx.space)
 
-    peak = float(np.abs(y).max())
-    if peak > 0.98:
-        y = y * (0.98 / peak)
-    return np.clip(y, -1.0, 1.0).astype("float32")
+    # 6. 软限幅收尾（比硬削波自然）
+    return _soft_clip(y, 0.96)
 
 
 class PiperTts:

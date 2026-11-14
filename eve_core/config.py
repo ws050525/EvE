@@ -320,6 +320,19 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
             voice_raw.get("tts_noise_scale_w", VoiceSettings.tts_noise_scale_w)
         ),
         tts_fx=bool(voice_raw.get("tts_fx", VoiceSettings.tts_fx)),
+        tts_fx_warmth=float(
+            voice_raw.get("tts_fx_warmth", VoiceSettings.tts_fx_warmth)
+        ),
+        tts_fx_clarity=float(
+            voice_raw.get("tts_fx_clarity", VoiceSettings.tts_fx_clarity)
+        ),
+        tts_fx_deharsh=float(
+            voice_raw.get("tts_fx_deharsh", VoiceSettings.tts_fx_deharsh)
+        ),
+        tts_fx_space=float(voice_raw.get("tts_fx_space", VoiceSettings.tts_fx_space)),
+        tts_fx_compression=float(
+            voice_raw.get("tts_fx_compression", VoiceSettings.tts_fx_compression)
+        ),
     )
     voice = _apply_voice_overlay(voice, data_dir)
 

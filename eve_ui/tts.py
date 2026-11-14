@@ -46,7 +46,14 @@ class TtsWorker(QObject):
             volume=self._settings.volume,
             noise_scale=self._settings.noise_scale,
             noise_scale_w=self._settings.noise_scale_w,
-            fx=VoiceFx(enabled=self._settings.fx),
+            fx=VoiceFx(
+                enabled=self._settings.fx,
+                warmth=self._settings.warmth,
+                clarity=self._settings.clarity,
+                deharsh=self._settings.deharsh,
+                space=self._settings.space,
+                compression=self._settings.compression,
+            ),
         )
 
     def _pick_backend(self):

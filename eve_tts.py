@@ -70,8 +70,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--fx", dest="fx", action="store_true", default=voice.tts_fx,
                         help="开「AI 音色」后处理")
     parser.add_argument("--no-fx", dest="fx", action="store_false", help="关后处理，听干声")
-    parser.add_argument("--clarity", type=float, default=0.30, help="提亮强度 0–0.6")
-    parser.add_argument("--space", type=float, default=0.10, help="空间感 0–0.3")
+    parser.add_argument("--warmth", type=float, default=voice.tts_fx_warmth,
+                        help="低频厚度 0–0.3，大一点声音更暖")
+    parser.add_argument("--clarity", type=float, default=voice.tts_fx_clarity,
+                        help="中高频存在感 0–0.6，大了发燥发硬")
+    parser.add_argument("--deharsh", type=float, default=voice.tts_fx_deharsh,
+                        help="齿音柔化 0–0.6，大了更闷")
+    parser.add_argument("--space", type=float, default=voice.tts_fx_space,
+                        help="空间感 0–0.3")
+    parser.add_argument("--compression", type=float, default=voice.tts_fx_compression,
+                        help="压缩 0–1，大了压扁、发硬")
     parser.add_argument("--save", help="保存成 wav")
     parser.add_argument("--no-play", action="store_true", help="只合成不播放")
     parser.add_argument("--list", action="store_true", help="列出可用模型")
@@ -82,8 +90,11 @@ def main(argv: list[str] | None = None) -> int:
 
     fx = VoiceFx(
         enabled=args.fx,
+        warmth=max(0.0, min(0.3, args.warmth)),
         clarity=max(0.0, min(0.6, args.clarity)),
+        deharsh=max(0.0, min(0.6, args.deharsh)),
         space=max(0.0, min(0.3, args.space)),
+        compression=max(0.0, min(1.0, args.compression)),
     )
     tts = PiperTts(
         args.model,
@@ -100,7 +111,9 @@ def main(argv: list[str] | None = None) -> int:
 
     print(f"模型 {Path(args.model).name}  语速 {tts.speed}  音量 {tts.volume}  "
           f"起伏 {tts.noise_scale}  停顿 {tts.noise_scale_w}  说话人 {tts.speaker}  "
-          f"后处理 {'开' if fx.enabled else '关'}")
+          f"后处理 {'开' if fx.enabled else '关'}"
+          + (f"（厚度 {fx.warmth} 提亮 {fx.clarity} 柔化 {fx.deharsh} "
+             f"空间 {fx.space} 压缩 {fx.compression}）" if fx.enabled else ""))
     print(f"文本：{args.text}")
 
     samples, rate = tts.synthesize(args.text)
