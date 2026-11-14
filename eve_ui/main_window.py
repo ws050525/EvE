@@ -387,6 +387,7 @@ class ChatWindow(QWidget):
             self._mode_has_tools,
         ) = self._load_voice_settings(config_path)
         self._refresh_perm_chip()  # 顶栏那颗权限胶囊要反映记住的状态
+        self._refresh_resume_btn()  # 上次有没做完的活就把「继续」亮出来
         self._voice = VoiceBridge(self._voice_settings, self)
         self._voice.state_changed.connect(self._on_voice_state)
         self._voice.transcript.connect(self._on_voice_text)
@@ -623,7 +624,18 @@ class ChatWindow(QWidget):
         self.voice_btn.setToolTip("点一下开始说，说完停一下自动结束（空格 / Ctrl+Space）")
         self.voice_btn.clicked.connect(self._on_voice)
 
+        # 上次有没做完的活时才出现：点了从断点继续，不用重讲一遍需求
+        self.resume_btn = QPushButton("继续", self)
+        self.resume_btn.setCursor(Qt.PointingHandCursor)
+        self.resume_btn.setStyleSheet(theme.VOICE_BUTTON_QSS)
+        self.resume_btn.setMinimumHeight(44)
+        self.resume_btn.setFixedWidth(64)
+        self.resume_btn.setVisible(False)
+        self.resume_btn.setToolTip("接着上次没做完的任务继续（Ctrl+R）")
+        self.resume_btn.clicked.connect(self._resume_task)
+
         row.addWidget(self.input, 1)
+        row.addWidget(self.resume_btn)
         row.addWidget(self.voice_btn)
         row.addWidget(self.send_btn)
         return row
@@ -644,6 +656,7 @@ class ChatWindow(QWidget):
 
         QShortcut(QKeySequence("Ctrl+Space"), self, activated=self._on_voice)
         QShortcut(QKeySequence("Esc"), self, activated=self._stop_task)
+        QShortcut(QKeySequence("Ctrl+R"), self, activated=self._resume_task)
 
     # ---------- 交互 ----------
 
@@ -1229,6 +1242,45 @@ class ChatWindow(QWidget):
         self._set_status("正在停止…（当前这一步跑完就停）")
         self._set_state("idle")
 
+    def _resume_task(self) -> None:
+        """接着上次没做完的活：上下文和计划由 agent 自己捞回来。"""
+        if self._busy:
+            return
+        self._enter_chat()
+        self._set_busy(True)
+        self._pause_wake()
+        self._tts_streaming = False
+        self._tts.cancel()
+        self._set_status("接着上次的活…")
+        self._set_state("thinking")
+        self._bridge.resume()
+
+    def _refresh_resume_btn(self) -> None:
+        """有断点才显示「继续」。每次任务结束/中断都刷一次。"""
+        button = getattr(self, "resume_btn", None)
+        if button is None:
+            return
+        snapshot = None
+        try:
+            from eve_agent.checkpoint import load as load_checkpoint
+
+            snapshot = load_checkpoint(self._data_dir)
+        except Exception:
+            snapshot = None
+        if snapshot is None:
+            button.setVisible(False)
+            return
+
+        bits: list[str] = []
+        if snapshot.request:
+            bits.append(snapshot.request[:26])
+        if snapshot.todo:
+            bits.append(f"{snapshot.done_steps}/{len(snapshot.todo)} 步")
+        if snapshot.files:
+            bits.append(f"{len(snapshot.files)} 个文件")
+        button.setVisible(True)
+        button.setToolTip("接着上次没做完的任务继续（Ctrl+R）\n" + " · ".join(bits))
+
     def _set_status(self, text: str) -> None:
         self.status.setText(text)
 
@@ -1328,6 +1380,16 @@ class ChatWindow(QWidget):
             self._last_latency = int(data.get("latency_ms") or 0)
         elif kind == "truncated":
             self._set_status("输出被截断，结果可能不完整")
+        elif kind == "checkpoint_saved":
+            self._refresh_resume_btn()
+            done = data.get("done")
+            total = data.get("total")
+            where = f"（{done}/{total} 步）" if total else ""
+            if self._started_chat:
+                self.chat.add_note(f"进度已存档{where} · 点「继续」接着做")
+        elif kind == "task_resumed":
+            if self._started_chat:
+                self.chat.add_note("从上次的断点继续")
         elif kind == "error":
             self._set_state("error")
             self._set_status("出错了")
@@ -1389,6 +1451,7 @@ class ChatWindow(QWidget):
         # 要开播就别先唤醒：醒来又立刻暂停，多一次开关麦克风还可能误触发。
         if not self._end_speech(text):
             self._resume_wake()
+        self._refresh_resume_btn()
 
     def _on_tts_finished(self, ok: bool) -> None:
         self._resume_wake()
@@ -1415,6 +1478,7 @@ class ChatWindow(QWidget):
         self._set_status("")
         self._set_busy(False)
         self._resume_wake()
+        self._refresh_resume_btn()
 
     # ---------- 悬浮球 ----------
 

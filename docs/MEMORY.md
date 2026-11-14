@@ -1,4 +1,4 @@
-﻿# EVE 记忆报告（截至 v0.7.0）
+﻿# EVE 记忆报告（截至 v0.7.1）
 
 > 给下一个对话用：读完这份就能接手，不用翻聊天记录。
 > 这份是**对话总结**，不是交接清单；上一版留下的 `docs/HANDOFF.md` 已删（内容并进这份）。
@@ -10,7 +10,7 @@
 一个本地优先的个人 agent：**本地模型陪聊 + 操作电脑，云端模型干重活**。
 
 - 仓库：https://github.com/ws050525/EvE （分支 `main`）
-- 当前版本：`0.7.0`（`eve_core/version.py`），最新标签 `v0.7.0`
+- 当前版本：`0.7.1`（`eve_core/version.py`），最新标签 `v0.7.1`
 - 工作目录：`D:\1\EVE`
 
 ## 2. 环境（容易踩的坑）
@@ -47,14 +47,15 @@ eve_core/   核心（不含 UI、不含 agent 循环）
 eve_agent/  agent 层
   loop.py       Agent：人格注入、流式、工具调用、上下文预算、用量记账
   context.py    token 估算、按轮裁剪、滚动摘要、兜底截断
+  checkpoint.py 断点：把"停在哪"存下来，下次接着做
   persona.py    人格状态机（抗议分级、颜文字节流）
-  tools/        registry / planning(todo_write) / builtin(app_launch,app_list,screen_capture)
+  tools/        registry / planning(todo_write) / project(多文件资料) / builtin(app_launch,app_list,screen_capture)
                 / desktop / workspace / shell / web / office
 eve_ui/     界面
   app.py 入口与开发期开关；main_window 主窗；chat_view 气泡；mobius 莫比乌斯；orb 悬浮球
   bridge.py agent 跑在 QThread；voice.py 语音线程；tts.py 播报线程；theme.py 配色
 eve_cli.py  eve_gui.py  eve_tts.py（播调试听工具）  tools/（模型下载、播报预览）
-tests/      9 个文件 / 164 项，全部不需要模型
+tests/      11 个文件 / 179 项，全部不需要模型
 ```
 
 ## 4. 三个档位
@@ -63,7 +64,7 @@ tests/      9 个文件 / 164 项，全部不需要模型
 | --- | --- | --- | --- | --- |
 | `chat` | 聊天 | 本地 GGUF | 无 | 纯聊天，不收成悬浮球，步数 12 |
 | `desktop` | 桌面 | DeepSeek Flash（云端） | 12 个桌面/联网/计划工具 | 收成悬浮球，步数 20 |
-| `work` | 工作 | DeepSeek Flash | 14 个（文件/文档/shell/联网/桌面） | 收成悬浮球，步数 32 |
+| `work` | 工作 | DeepSeek Flash | 16 个（含计划、多文件资料） | 收成悬浮球，步数 32 |
 
 内部 id 保持英文，显示名走 `[modes.*] label`。切档会重置上下文（prompt + 工具集变了）。
 **步数上限按档位走**（`[modes.*] max_steps`），`[app] max_steps` 只是兜底。
@@ -86,6 +87,7 @@ tests/      9 个文件 / 164 项，全部不需要模型
   见第 12 节；顺手清掉 537MB 没用的音色和 `.tmp/`。
 - **0.6.10**：声音不再发硬——后处理从"提亮优先"改成"柔和优先"，语速 1.12→1.05，
   句间留 70ms 换气，见 12.6 节。
+- **0.7.1**：断点续跑 + 多文件资料（`checkpoint.py` / `project_init` / `project_status`），见第 14 节。
 - **0.7.0**：agent 能力节点——计划工具 `todo_write`、长文分块写（office_write append）、
   联网查证方法论、完全权限一键开关、桌面档换云端、随时停止，见第 13 节。
 
@@ -172,8 +174,8 @@ tests/      9 个文件 / 164 项，全部不需要模型
 & 'D:\python\python.exe' tests\test_voice.py # 单个测试
 ```
 
-测试共 9 个文件 / 164 项：persona / context / workspace / cost / apps / office / voice /
-agent_loop / planning（语音 50 项；计划与偏好 11 项）。
+测试共 11 个文件 / 179 项：persona / context / workspace / cost / apps / office / voice /
+agent_loop / planning / checkpoint / project（语音 50 项；计划 11 项；断点 7 项；多文件 8 项）。
 
 下载语音模型（SenseVoice + silero VAD）：
 
@@ -185,7 +187,7 @@ agent_loop / planning（语音 50 项；计划与偏好 11 项）。
 ## 11. 给下一个对话的开场建议
 
 > 读 `docs/MEMORY.md`。语音（第 12 节）和 agent 能力（第 13 节）两个节点都已完成，
-> 测试 164/164，代码在本地和 GitHub 上都是最新。
+> 测试 179/179，代码在本地和 GitHub 上都是最新。
 > 剩下的主要是**真人验收**：喊「伊芙」听播报、开完全权限跑一个真实复杂任务、
 > 看长任务中途按停止会不会干净退出。
 > 然后是打包（PyInstaller one-folder，模型外置）。
@@ -349,3 +351,52 @@ wav 放到 `.tmp/preview/` 供试听。
 - 浏览器真交互（点按/登录）仍然只有桌面工具，没有无头浏览器。
 - 长任务的过程产物（中间稿）没有在界面上单独展示。
 - 打包（PyInstaller one-folder，模型外置）一直没动。
+
+## 14. 断点续跑与多文件资料（v0.7.1）
+
+### 14.1 断点续跑（`eve_agent/checkpoint.py`）
+
+**问题**：任务动辄二三十步，用户按停止或撞上步数上限，前面查的资料、写好的文件全白费——
+模型不知道上次干到哪，只能重头再来。
+
+**做法**：三种"没干完"的出口都存一份快照到 `.data/tasks/latest.json`：
+`cancelled`（用户停止）/ `steps_limit`（撞上限）/ `error`（异常）。快照里有：
+原始请求、计划清单、动过的文件、截断后的对话历史（单条 ≤4000 字符，最多 40 条）。
+
+**续跑**：`Agent.resume()` 把历史、计划捞回来，生成一段 brief（上次做到第几步、
+还差哪些、上次说到哪），然后照常 `send(brief)`。提示词里明确写了
+"以（续跑）开头 → 从没完成的那一步继续，不要重写已完成的部分"。
+
+**入口**：
+- 界面：输入框旁边出现「继续」按钮（`Ctrl+R`），只在真有断点时显示。
+- 命令行：`eve_cli.py --resume`；`--steps N` 可以临时压低步数上限（测断点用）。
+
+**清除**：任务正常做完自动删断点，所以「继续」不会给出一个已经完成的任务。
+
+### 14.2 多文件资料（`eve_agent/tools/project.py`）
+
+**问题**：让模型写"主报告 + 附录 + 摘要 PPT"，它能写，但常见三件事：
+引用写成 `附录.md` 而实际叫 `02-附录.md`；引用了不存在的文件；目录里多出没人认领的产物。
+
+**做法**：
+- `project_init(name, title, files=[{path, purpose}])` → 生成 `manifest.json` + `index.md`。
+- `project_status(name)` → 检查缺文件 / 字数过少（<50 字）/ markdown 相对链接断链 /
+  清单外的孤儿文件，最后给"齐了"或"还没齐"的结论。
+- 提示词要求：多文件先建清单 → 逐篇写（互引用用相对链接）→ 写完必须跑一次自检 → 交付 index.md。
+
+单文件任务不该用这套工具，`office_write` 一次写完就行（提示词里也写了）。
+
+### 14.3 实测（2026-11-14，真实 API）
+
+- **断点**：`--steps 4` 跑一个 6 页 PPT 任务 → 第 4 步停下，断点里 4 步计划、13 条消息、
+  reason=steps_limit；`--resume` 接着跑完 → 6 页 PPT、3 个来源、断点自动清除。¥0.011 + ¥0.008。
+- **多文件**：`docs/ai-adoption` 三件套 → 主报告 1667 字、附录 7 张表、
+  1 页 PPT 带讲稿，三份互引（主报告 ↔ 附录 / 摘要），`project_status` 报"齐了"。
+  ¥0.0074。
+
+### 14.4 还没做的
+
+- 断点只有"最近一份"，多任务并行时会互相覆盖。
+- 续跑不会自动挑回原来的档位/模型到界面显示（agent 内部会切回，UI 顶栏要手动刷新）。
+- 多文件只做 markdown 链接检查，Office 之间只核对存在性。
+- 打包（PyInstaller）按用户要求继续往后放。

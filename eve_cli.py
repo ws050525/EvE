@@ -122,6 +122,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--config", help="配置文件路径")
     parser.add_argument("--once", metavar="TEXT", help="非交互执行一句话后退出")
     parser.add_argument("--yes", action="store_true", help="非交互模式下自动批准工具调用")
+    parser.add_argument(
+        "--steps", type=int, metavar="N", help="临时覆盖步数上限（调试长任务用）"
+    )
+    parser.add_argument(
+        "--resume", action="store_true", help="接着上次没做完的任务继续"
+    )
     args = parser.parse_args(argv)
 
     try:
@@ -195,11 +201,24 @@ def main(argv: list[str] | None = None) -> int:
         answer = input(f"  工具 {spec.name}({preview}) 需要确认，执行吗？[y/N] ").strip().lower()
         return answer in {"y", "yes"}
 
-    if args.once:
+    if args.steps:
+        agent.set_max_steps(args.steps)
+
+    prompt = args.once
+    if args.resume and not prompt:
+        brief = agent.resume()
+        if brief is None:
+            print("没有可以继续的任务。", file=sys.stderr)
+            runtime.shutdown()
+            return 1
+        print("接着上次的任务继续…", file=sys.stderr)
+        prompt = brief
+
+    if prompt:
         if kind == "local_gguf":
             print("（首次使用会拉起本地引擎，约 3–6 秒）", file=sys.stderr, flush=True)
         try:
-            reply = agent.send(args.once, confirm=confirm)
+            reply = agent.send(prompt, confirm=confirm)
         except (ProviderError, ConfigError) as exc:
             status_line.clear()
             print(f"调用失败：{exc}", file=sys.stderr)

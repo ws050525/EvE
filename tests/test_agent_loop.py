@@ -90,37 +90,45 @@ def desktop_tier_still_complete():
 @case
 def cancel_stops_before_the_next_tool_runs():
     """按停止之后，不该再执行任何工具，也不该继续往下跑。"""
+    import tempfile
+
     from eve_core.provider import ChatResult, ToolCall
 
-    agent = _agent("work")
+    with tempfile.TemporaryDirectory() as tmp:
+        agent = _agent("work")
+        agent.cfg.data_dir = Path(tmp)  # 断点写到临时目录，别污染真实 .data
 
-    class CancellingProvider:
-        name = "stub"
-        model = "stub"
+        class CancellingProvider:
+            name = "stub"
+            model = "stub"
 
-        def __init__(self):
-            self.calls = 0
+            def __init__(self):
+                self.calls = 0
 
-        def chat(self, messages, tools=None, *, max_tokens=512, temperature=0.7):
-            self.calls += 1
-            agent.cancel()  # 用户在这一步按了停止
-            return ChatResult(
-                content="",
-                model="stub",
-                tool_calls=[
-                    ToolCall(id="1", name="fs_write", arguments={"path": "x.txt", "content": "会不会被执行"})
-                ],
-            )
+            def chat(self, messages, tools=None, *, max_tokens=512, temperature=0.7):
+                self.calls += 1
+                agent.cancel()  # 用户在这一步按了停止
+                return ChatResult(
+                    content="",
+                    model="stub",
+                    tool_calls=[
+                        ToolCall(
+                            id="1",
+                            name="fs_write",
+                            arguments={"path": "x.txt", "content": "会不会被执行"},
+                        )
+                    ],
+                )
 
-    provider = CancellingProvider()
-    agent._provider = provider
-    agent._provider_model_id = agent.model_id
+        provider = CancellingProvider()
+        agent._provider = provider
+        agent._provider_model_id = agent.model_id
 
-    out = agent.send("写一个文件")
+        out = agent.send("写一个文件")
 
-    assert "已停止" in out, out
-    assert provider.calls == 1, provider.calls
-    assert not (agent.cfg.work_root / "x.txt").exists(), "停止之后工具不该真的执行"
+        assert "已停止" in out, out
+        assert provider.calls == 1, provider.calls
+        assert not (agent.cfg.work_root / "x.txt").exists(), "停止之后工具不该真的执行"
 
 
 @case

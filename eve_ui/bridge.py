@@ -198,6 +198,25 @@ class AgentWorker(QObject):
             self._agent.cancel()
         self._decision.set()  # 顺手解开可能挂着的工具确认
 
+    @Slot()
+    def resume(self) -> None:
+        """接着上次没做完的活：把上下文和计划捞回来，再补一句"从哪继续"。"""
+        if self._agent is None:
+            self.failed.emit("agent 尚未就绪")
+            return
+        try:
+            brief = self._agent.resume()
+        except Exception as exc:
+            self.failed.emit(f"续跑失败：{exc}")
+            return
+        if not brief:
+            self.failed.emit("没有可以继续的任务")
+            return
+        try:
+            self.replied.emit(self._agent.send(brief, confirm=self._confirm))
+        except Exception as exc:
+            self.failed.emit(str(exc))
+
     @Slot(str)
     def set_mode(self, mode_name: str) -> None:
         if self._agent is None:
@@ -358,6 +377,10 @@ class AgentBridge(QObject):
     def cancel(self) -> None:
         # 直接调用：worker 正阻塞在模型请求里，排队的信号要等它跑完才会被处理
         self._worker.cancel()
+
+    def resume(self) -> None:
+        # 同理：续跑前 worker 是空闲的，可以安全排队；但直接调用更省事也不会错
+        self._worker.resume()
 
     def ask(self, text: str) -> None:
         self.ask_requested.emit(text)

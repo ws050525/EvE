@@ -18,6 +18,8 @@ from eve_core.provider import ChatResult, Provider
 from eve_core.runtime import RuntimeManager
 from eve_core.usage import UsageTracker
 
+from . import checkpoint as checkpoints
+from .checkpoint import TaskCheckpoint
 from .context import (
     SUMMARY_SYSTEM,
     ContextPolicy,
@@ -62,6 +64,7 @@ class Agent:
         self._provider: Provider | None = None
         self._provider_model_id: str = ""
         self._cancelled = False  # 用户按了停止；每一步之间检查一次
+        self._checkpoint: TaskCheckpoint | None = None
         self._activate(self.mode_name, reset=True)
 
     # ---------- 档位与模型 ----------
@@ -156,6 +159,86 @@ class Agent:
         没法中途掐断一个已经发出的 HTTP 请求，所以停止是"这一步结束后停"。
         """
         self._cancelled = True
+
+    # ---------- 断点续跑 ----------
+
+    @property
+    def todo(self):
+        todo = getattr(self.registry, "todo", None)
+        return todo
+
+    def todo_items(self) -> list[dict[str, str]]:
+        todo = self.todo
+        if todo is None:
+            return []
+        return [{"content": item.content, "status": item.status} for item in todo.items]
+
+    @property
+    def checkpoint(self) -> TaskCheckpoint | None:
+        return self._checkpoint
+
+    def _save_checkpoint(
+        self, reason: str, step: int, request: str
+    ) -> TaskCheckpoint | None:
+        if not request:
+            return None
+        snapshot = checkpoints.build(
+            mode=self.mode_name,
+            model=self.model_id,
+            reason=reason,
+            step=step,
+            max_steps=self._max_steps,
+            request=request,
+            todo=self.todo_items(),
+            messages=self.messages,
+            previous=self._checkpoint,
+        )
+        try:
+            checkpoints.save(snapshot, self.cfg.data_dir)
+        except OSError:
+            return None
+        self._checkpoint = snapshot
+        self.bus.emit(
+            "checkpoint_saved",
+            id=snapshot.id,
+            reason=reason,
+            done=snapshot.done_steps,
+            total=len(snapshot.todo),
+            files=len(snapshot.files),
+            request=snapshot.request[:120],
+        )
+        return snapshot
+
+    def _clear_checkpoint(self) -> None:
+        self._checkpoint = None
+        checkpoints.clear(self.cfg.data_dir)
+
+    def resume(self) -> str | None:
+        """准备续跑：把上次的上下文、计划捞回来，返回给模型看的"上次进度"。
+
+        没存过断点返回 None。调用方拿到 brief 之后照常 send(brief) 就行。
+        """
+        snapshot = checkpoints.load(self.cfg.data_dir)
+        if snapshot is None:
+            return None
+
+        if snapshot.mode and snapshot.mode != self.mode_name:
+            self._activate(snapshot.mode, reset=False)
+
+        system = None
+        if self.messages and self.messages[0].get("role") == "system":
+            system = self.messages[0]
+        restored = [m for m in snapshot.messages if m.get("role") != "system"]
+        self.messages = ([system] if system else []) + restored
+
+        self._checkpoint = snapshot
+        if self.todo is not None and snapshot.todo:
+            self.todo.write(snapshot.todo)
+
+        self.bus.emit(
+            "task_resumed", id=snapshot.id, request=snapshot.request[:120]
+        )
+        return snapshot.brief()
 
     # ---------- 事件 ----------
 
@@ -378,7 +461,8 @@ class Agent:
 
         for step in range(1, self._max_steps + 1):
             if self.cancelled:
-                return "（已停止：这是你按下的停止，不是出错）"
+                self._save_checkpoint("cancelled", step, text)
+                return "（已停止：这是你按下的停止，不是出错。进度已存档，点「继续」可以接着做）"
             # 每步都量一次：工具结果可能刚把窗口顶爆，必须在发请求前压回去
             self._enforce_context()
             self.bus.emit("thinking", step=step, model=self.model_id)
@@ -387,6 +471,7 @@ class Agent:
             if not schemas:
                 streamed = self._stream_once(text, step)
                 if streamed is not None:
+                    self._clear_checkpoint()
                     return streamed
 
             try:
@@ -397,6 +482,7 @@ class Agent:
                     temperature=self.mode.temperature,
                 )
             except Exception as exc:
+                self._save_checkpoint("error", step, text)
                 self.bus.emit("error", message=str(exc), step=step)
                 raise
             self._log(result, step, text)
@@ -409,6 +495,7 @@ class Agent:
             if not result.tool_calls:
                 self.messages.append({"role": "assistant", "content": result.content})
                 final = self.persona.decorate(result.content, mode=self.mode_name)
+                self._clear_checkpoint()
                 self.bus.emit(
                     "reply_done",
                     text=final,
@@ -463,7 +550,11 @@ class Agent:
                     }
                 )
 
-        return f"（已达 {self._max_steps} 步上限，停止。可以 /reset 后给更具体的指令，或调高步数上限）"
+        self._save_checkpoint("steps_limit", self._max_steps, text)
+        return (
+            f"（已达 {self._max_steps} 步上限，先停在这里。进度已存档，"
+            "点「继续」可以接着做，或者调高步数上限）"
+        )
 
     # ---------- 日志 ----------
 

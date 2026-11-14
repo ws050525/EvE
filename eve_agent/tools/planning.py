@@ -117,6 +117,8 @@ class TodoList:
 
 def register_planning(registry: ToolRegistry, cfg=None) -> TodoList:
     todos = TodoList()
+    # 挂在 registry 上，Agent 才能读出当前计划（存断点、给界面看进度）
+    registry.todo = todos
 
     registry.register(
         ToolSpec(
