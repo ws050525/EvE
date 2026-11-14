@@ -23,9 +23,9 @@ work_root = "."              # 文件工具和 shell_exec 的根目录，越界�
 # ---------- 视觉（本地视觉模型当"眼睛"）----------
 # 聊天和干活都走云端了，本地只留一个"能看屏幕"的模型。留空 = 自动挑第一个文件齐全的。
 [vision]
-model = "qwen3vl-8b"         # 没下载 8B 会自动退回 qwen3vl-4b
+model = "ui-tars-1.5-7b"     # 没下载完会自动退回 qwen3vl-8b / qwen3vl-4b（都按存在性判断）
 # 坐标格式：auto = 按模型名猜；general = JSON 像素；uitars = 动作 + 0–1000 归一化
-# 换 UI-TARS / Holo 这类 GUI 专用模型时留 auto（名字能认出来），或者写死 uitars
+# UI-TARS / Holo 这类 GUI 专用模型留 auto 就行（名字能认出来）
 format = "auto"
 
 # ---------- 浏览器真交互 ----------
@@ -105,6 +105,20 @@ extra_args = ["--image-max-tokens", "256"]  # 视觉输入上限：Qwen3-VL 默�
 #
 # 放不下就把量化降到 Q3_K_M（≈3.9 GB）；想要更准就 Q5_K_M（≈5.7 GB，8G 显存要调小 ctx）。
 # 旧的 4B 留着当后备：没下载 8B 时会自动用它。
+
+# 视觉首选：UI-TARS-1.5-7B（字节的 GUI agent 模型，专门练"看截图 → 点哪"）。
+# 权重 4.4GB + 视觉投影 1.3GB，来源：hf-mirror.com/adriabama06/UI-TARS-1.5-7B-GGUF
+# 它输出 Action: click(start_box=...) + 0–1000 归一化坐标，vision.py 已适配。
+[models."ui-tars-1.5-7b"]
+label = "UI-TARS 1.5 7B Q4_K_M（GUI 定位）"
+kind = "local_gguf"
+engine = "llamacpp"
+path = "models/UI-TARS-1.5-7B-GGUF/ByteDance-Seed_UI-TARS-1.5-7B-Q4_K_M.gguf"
+mmproj = "models/UI-TARS-1.5-7B-GGUF/mmproj-ByteDance-Seed_UI-TARS-1.5-7B.gguf"
+weights_mb = 4466           # 完整性检查：没到这个大小就当还没下好，自动退回上一个模型
+mmproj_mb = 1293
+ctx = 8192
+ngl = 99
 
 [models.qwen3vl-8b]
 label = "Qwen3-VL 8B Q4_K_M（视觉）"

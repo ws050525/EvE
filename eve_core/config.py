@@ -76,6 +76,10 @@ class ModelConfig:
     price_in: float = 0.0
     price_out: float = 0.0
     price_cached_in: float = 0.0  # 命中缓存的输入价；<=0 表示按 price_in 算
+    # 完整性检查（可选）：文件应该有这么大。下到一半的 GGUF 也能骗过"存在"检查，
+    # 但加载会直接崩，所以给个下限，没到就当作"还没下载好"。
+    weights_mb: int = 0
+    mmproj_mb: int = 0
 
     def detect_kind(self) -> str:
         if self.kind:

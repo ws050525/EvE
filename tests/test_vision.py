@@ -13,6 +13,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from eve_core import vision
 
+# 单元测试里用 1 字节的假模型文件，把"最小体积"检查关掉，只测挑选逻辑本身
+vision.MIN_MODEL_MB = 0
+
 CHECKS = []
 
 # 1x1 的透明 PNG，够测编码

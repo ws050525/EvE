@@ -1,4 +1,4 @@
-﻿"""让看不了图的模型也能"看屏幕"：用本地 Qwen3-VL 当眼睛。
+"""让看不了图的模型也能"看屏幕"：用本地 Qwen3-VL 当眼睛。
 
 背景：干活的档位现在跑云端模型（DeepSeek Flash），它不收图片；而桌面操作
 （"点搜索框""这一页的下拉在哪"）本质上需要看。本地那个 Qwen3-VL 有视觉，
@@ -180,20 +180,34 @@ def capture(
     )
 
 
+MIN_MODEL_MB = 20  # 太小的多半是没下完的半截文件
+
+
 def _model_ready(model, cfg) -> bool:
-    """权重和视觉投影都在磁盘上才算能用。"""
+    """权重和视觉投影都在磁盘上、且大小像完整的，才算能用。
+
+    配置里给了 `weights_mb` / `mmproj_mb` 就按它卡 95%；没给就只挡掉明显是空壳的。
+    """
     weights = getattr(model, "path", "")
     mmproj = getattr(model, "mmproj", "")
     if not weights or not mmproj:
         return False
     try:
         root = Path(getattr(cfg, "root", "."))
-        for item in (weights, mmproj):
+        checks = (
+            (weights, int(getattr(model, "weights_mb", 0) or 0)),
+            (mmproj, int(getattr(model, "mmproj_mb", 0) or 0)),
+        )
+        for item, expected in checks:
             path = Path(item)
             if not path.is_absolute():
                 path = root / path
             if not path.exists():
                 return False
+            size_mb = path.stat().st_size / 1048576.0
+            floor = expected * 0.95 if expected else MIN_MODEL_MB
+            if size_mb < floor:
+                return False  # 下到一半的别用，加载会直接崩
     except Exception:
         return False
     return True
