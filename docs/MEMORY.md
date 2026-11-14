@@ -1,4 +1,4 @@
-# EVE 记忆报告（截至 v0.6.10）
+﻿# EVE 记忆报告（截至 v0.7.0）
 
 > 给下一个对话用：读完这份就能接手，不用翻聊天记录。
 > 这份是**对话总结**，不是交接清单；上一版留下的 `docs/HANDOFF.md` 已删（内容并进这份）。
@@ -10,7 +10,7 @@
 一个本地优先的个人 agent：**本地模型陪聊 + 操作电脑，云端模型干重活**。
 
 - 仓库：https://github.com/ws050525/EvE （分支 `main`）
-- 当前版本：`0.6.10`（`eve_core/version.py`），最新标签 `v0.6.10`
+- 当前版本：`0.7.0`（`eve_core/version.py`），最新标签 `v0.7.0`
 - 工作目录：`D:\1\EVE`
 
 ## 2. 环境（容易踩的坑）
@@ -48,24 +48,25 @@ eve_agent/  agent 层
   loop.py       Agent：人格注入、流式、工具调用、上下文预算、用量记账
   context.py    token 估算、按轮裁剪、滚动摘要、兜底截断
   persona.py    人格状态机（抗议分级、颜文字节流）
-  tools/        registry / builtin(app_launch,app_list,screen_capture) / desktop / workspace /
-                shell / web / office
+  tools/        registry / planning(todo_write) / builtin(app_launch,app_list,screen_capture)
+                / desktop / workspace / shell / web / office
 eve_ui/     界面
   app.py 入口与开发期开关；main_window 主窗；chat_view 气泡；mobius 莫比乌斯；orb 悬浮球
   bridge.py agent 跑在 QThread；voice.py 语音线程；tts.py 播报线程；theme.py 配色
-eve_cli.py  eve_gui.py  eve_tts.py（播调试听工具）
-tests/      8 个文件 / 136 项，全部不需要模型
+eve_cli.py  eve_gui.py  eve_tts.py（播调试听工具）  tools/（模型下载、播报预览）
+tests/      9 个文件 / 164 项，全部不需要模型
 ```
 
 ## 4. 三个档位
 
 | id | 显示名 | 模型 | 工具 | 行为 |
 | --- | --- | --- | --- | --- |
-| `chat` | 聊天 | 本地 GGUF | 无 | 纯聊天，不收成悬浮球 |
-| `desktop` | 桌面 | 本地 GGUF | 11 个桌面/联网工具 | 收成悬浮球，干完回界面 |
-| `work` | 工作 | DeepSeek Flash | 12 个（文件/文档/shell/桌面混合） | 收成悬浮球，干完回界面 |
+| `chat` | 聊天 | 本地 GGUF | 无 | 纯聊天，不收成悬浮球，步数 12 |
+| `desktop` | 桌面 | DeepSeek Flash（云端） | 12 个桌面/联网/计划工具 | 收成悬浮球，步数 20 |
+| `work` | 工作 | DeepSeek Flash | 14 个（文件/文档/shell/联网/桌面） | 收成悬浮球，步数 32 |
 
 内部 id 保持英文，显示名走 `[modes.*] label`。切档会重置上下文（prompt + 工具集变了）。
+**步数上限按档位走**（`[modes.*] max_steps`），`[app] max_steps` 只是兜底。
 
 ## 5. 这几十轮做了什么（按版本）
 
@@ -85,6 +86,8 @@ tests/      8 个文件 / 136 项，全部不需要模型
   见第 12 节；顺手清掉 537MB 没用的音色和 `.tmp/`。
 - **0.6.10**：声音不再发硬——后处理从"提亮优先"改成"柔和优先"，语速 1.12→1.05，
   句间留 70ms 换气，见 12.6 节。
+- **0.7.0**：agent 能力节点——计划工具 `todo_write`、长文分块写（office_write append）、
+  联网查证方法论、完全权限一键开关、桌面档换云端、随时停止，见第 13 节。
 
 ## 6. 关键决策（别推翻）
 
@@ -169,8 +172,8 @@ tests/      8 个文件 / 136 项，全部不需要模型
 & 'D:\python\python.exe' tests\test_voice.py # 单个测试
 ```
 
-测试共 8 个文件 / 149 项：persona / context / workspace / cost / apps / office / voice / agent_loop
-（语音 50 项；含"后处理必须压高频、不能压扁动态"两条防回潮用例）。
+测试共 9 个文件 / 164 项：persona / context / workspace / cost / apps / office / voice /
+agent_loop / planning（语音 50 项；计划与偏好 11 项）。
 
 下载语音模型（SenseVoice + silero VAD）：
 
@@ -181,10 +184,11 @@ tests/      8 个文件 / 136 项，全部不需要模型
 
 ## 11. 给下一个对话的开场建议
 
-> 读 `docs/MEMORY.md`。语音两处大修 + 音色柔化都已完成（第 12 节），测试 149/149，
-> 代码在本地和 GitHub 上都是最新。
-> 剩下的主要是**真人验收**（喊「伊芙」、说长指令、听播报）。
-> 然后：① 跨工具工作流端到端（查资料 → 写文件 → 打开软件写进去）；② 打包。
+> 读 `docs/MEMORY.md`。语音（第 12 节）和 agent 能力（第 13 节）两个节点都已完成，
+> 测试 164/164，代码在本地和 GitHub 上都是最新。
+> 剩下的主要是**真人验收**：喊「伊芙」听播报、开完全权限跑一个真实复杂任务、
+> 看长任务中途按停止会不会干净退出。
+> 然后是打包（PyInstaller one-folder，模型外置）。
 
 ## 12. 语音两处大修（v0.6.9，已验证并提交）
 
@@ -282,3 +286,66 @@ tests/      8 个文件 / 136 项，全部不需要模型
 `eve_tts.py` 也有同名命令行参数（`--deharsh --compression ...`）。想更柔就把 `deharsh` 往上、
 `clarity`/`compression` 往下；`tools/tts_preview.py` 会把"当前 / 更柔 / 干声 / 各音色"渲染成
 wav 放到 `.tmp/preview/` 供试听。
+
+## 13. agent 能力节点（v0.7.0）
+
+目标：让它能接"市面上的 agent 都能干"的活——写文章、做 PPT、不确定的数据自己查。
+
+### 13.1 让长任务跑得起来（几处硬限制）
+
+| 问题 | 原来 | 现在 |
+| --- | --- | --- |
+| 输出上限 | work 2048 tokens，长文必被截断 | work 8192 / desktop 4096 |
+| 步数 | 全局 12 步 | 按档位：chat 12 / desktop 20 / work 32 |
+| 写长文 | 一次 `office_write` 塞几千字 → 参数非法 JSON | `append=true` 分块续写（docx/pptx/xlsx 都支持） |
+| PPT 排版 | 只有一级要点、固定 18pt | `bullets` 支持 `{"text","level"}` 二级缩进、`notes` 讲稿、按条数自适应字号 |
+| shell 里 python | 机器上 Python 不在 PATH，`python` 直接 exit 9009 | `shell_exec` 把解释器目录**挪到** PATH 最前（不是"没有就加"，系统里已有一个排在 Store 占位符后面） |
+
+### 13.2 计划工具 `todo_write`（eve_agent/tools/planning.py）
+
+多步任务的骨架：列 3–8 步，每步 `pending / in_progress / completed`，
+**同一时刻只允许一个 in_progress**（多出来的自动降回 pending 并告知）。
+每次调用都回完整清单——即使上下文被摘要压过，也能立刻对回目标。
+`work` / `desktop` 两档都挂了它；纯聊天档没有。
+
+### 13.3 提示词（prompts/work.md 重写）
+
+从"能用工具"升级成"会做项目"：判断任务类型 → 列计划 → 查证（至少两个独立来源，
+对不上就明说，末尾列来源）→ 分块写正文 → 生成文件 → 自检（`fs_list` 确认存在）→ 交付。
+明确写了"简单一问一答别用 todo_write"，避免为了用工具而用工具。
+
+### 13.4 完全权限
+
+顶栏新增 `权限：询问 / 权限：完全` 胶囊（`theme.PERM_CHIP_ON_QSS` 打开时变警示色）。
+点一下切换，状态存 `.data/prefs.json`（`save_preference`），下次启动还在；
+`config.toml` 的 `auto_confirm` 只是默认值。命令行 `--yes` 等价。
+
+### 13.5 随时停止
+
+- `Agent.cancel()` 置标志位，主循环每步开头检查，工具循环里也检查 → 当前这步结束后退出。
+- `AgentBridge.cancel()` **直接调用 worker**（不排队）：worker 正阻塞在模型请求里，排队的信号没用。
+- UI：忙的时候发送按钮变 **停止**，`Esc` 同效。
+- 局限：已经发出的 HTTP 请求掐不掉，所以是"这一步跑完就停"，不是立刻。
+
+### 13.6 云端模型
+
+`desktop` 档从本地 4B 换成 `deepseek-flash`：4B 做工具调用参数错误率太高（实测反复试错）。
+`chat` 仍用本地——陪聊不需要那么强，也不花钱。
+
+### 13.7 端到端实测（2026-11-14，真实 API）
+
+1. **写文章**：`写 800 字《本地模型和云端模型怎么分工》，3 个小标题，生成 docx`
+   → 3 步计划 + 2 次 `office_write`（append）+ 自检，11 步、977 个汉字、¥0.005。
+2. **查资料做 PPT**：`8 页《2026 年 AI 编程助手市场格局》，至少两个独立来源，最后一页列来源`
+   → JetBrains + Stack Overflow 交叉验证排名，两个口径的市场规模并列而不是硬凑一个，
+   标注了媒体转述未确认的数字和付费墙限制，8 页 + 讲稿，¥0.0096。
+
+两个都远超"简单操作"：会自己判断数据可信度、会承认读不到原文。
+
+### 13.8 还没做的（下一个节点的候选）
+
+- 任务中断后的"继续"：现在停了就停了，没有断点续跑。
+- 多文件项目级写作（一个目录里多篇互相引用）。
+- 浏览器真交互（点按/登录）仍然只有桌面工具，没有无头浏览器。
+- 长任务的过程产物（中间稿）没有在界面上单独展示。
+- 打包（PyInstaller one-folder，模型外置）一直没动。

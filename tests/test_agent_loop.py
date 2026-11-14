@@ -88,6 +88,42 @@ def desktop_tier_still_complete():
 
 
 @case
+def cancel_stops_before_the_next_tool_runs():
+    """按停止之后，不该再执行任何工具，也不该继续往下跑。"""
+    from eve_core.provider import ChatResult, ToolCall
+
+    agent = _agent("work")
+
+    class CancellingProvider:
+        name = "stub"
+        model = "stub"
+
+        def __init__(self):
+            self.calls = 0
+
+        def chat(self, messages, tools=None, *, max_tokens=512, temperature=0.7):
+            self.calls += 1
+            agent.cancel()  # 用户在这一步按了停止
+            return ChatResult(
+                content="",
+                model="stub",
+                tool_calls=[
+                    ToolCall(id="1", name="fs_write", arguments={"path": "x.txt", "content": "会不会被执行"})
+                ],
+            )
+
+    provider = CancellingProvider()
+    agent._provider = provider
+    agent._provider_model_id = agent.model_id
+
+    out = agent.send("写一个文件")
+
+    assert "已停止" in out, out
+    assert provider.calls == 1, provider.calls
+    assert not (agent.cfg.work_root / "x.txt").exists(), "停止之后工具不该真的执行"
+
+
+@case
 def context_compaction_keeps_system_and_appends_summary():
     agent = _agent("chat")
     # 预算要建在 system prompt 之上：system 是底线，永远不会被裁，
@@ -173,8 +209,8 @@ def cloud_cost_matches_config_price():
 
 @case
 def local_model_is_free():
-    agent = _agent("desktop")  # 本地模型 + 有工具 → 走 chat()
-    agent.send("列一下窗口")
+    agent = _agent("chat")  # 聊天档跑本地模型 → 不计费
+    agent.send("你好")
     assert agent.usage.totals().calls == 1
     assert agent.usage.session_cost == 0.0, agent.usage.session_cost
 
@@ -198,8 +234,14 @@ def context_budget_defaults_to_auto():
 
 @case
 def mode_can_override_budget():
-    agent = _agent("work")  # config.toml 里 work 档写了 12000
-    assert agent.context_policy.max_prompt_tokens == 12000
+    cfg = load_config()
+    agent = _agent("work")  # work 档在 config.toml 里单独写了 context_tokens
+    expected = cfg.modes["work"].context_tokens
+    assert expected > 0, "这段测试依赖 work 档自带的预算"
+    assert agent.context_policy.max_prompt_tokens == expected, (
+        agent.context_policy.max_prompt_tokens,
+        expected,
+    )
 
 
 @case

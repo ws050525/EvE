@@ -46,7 +46,7 @@ from .mobius import MobiusWidget
 from .orb import OrbWindow
 from .tts import TtsBridge
 from .voice import VoiceBridge, WakeBridge
-from eve_core.config import load_config, save_voice_preference
+from eve_core.config import load_config, save_preference, save_voice_preference
 from eve_core.pricing import format_money
 from eve_core.tts import TtsSettings, list_voice_models
 from eve_core.voice import VoiceSettings, match_wake, mode_aliases, parse_mode_command
@@ -386,6 +386,7 @@ class ChatWindow(QWidget):
             self._auto_confirm,
             self._mode_has_tools,
         ) = self._load_voice_settings(config_path)
+        self._refresh_perm_chip()  # 顶栏那颗权限胶囊要反映记住的状态
         self._voice = VoiceBridge(self._voice_settings, self)
         self._voice.state_changed.connect(self._on_voice_state)
         self._voice.transcript.connect(self._on_voice_text)
@@ -517,6 +518,15 @@ class ChatWindow(QWidget):
         layout.addWidget(self.ctx_chip, 0, Qt.AlignVCenter)
         layout.addSpacing(4)
 
+        # 一键权限：点一下在"逐次询问"和"完全权限"之间切。状态会存进 .data/prefs.json
+        self.perm_chip = QPushButton("权限", bar)
+        self.perm_chip.setFixedHeight(20)
+        self.perm_chip.setCursor(Qt.PointingHandCursor)
+        self.perm_chip.setStyleSheet(theme.PERM_CHIP_QSS)
+        self.perm_chip.clicked.connect(self._toggle_auto_confirm)
+        layout.addWidget(self.perm_chip, 0, Qt.AlignVCenter)
+        layout.addSpacing(4)
+
         self.model_label = QPushButton("", bar)
         self.model_label.setCursor(Qt.PointingHandCursor)
         self.model_label.setToolTip("点这里换模型")
@@ -603,7 +613,7 @@ class ChatWindow(QWidget):
         self.send_btn = QPushButton("发送", self)
         self.send_btn.setStyleSheet(theme.SEND_BUTTON_QSS)
         self.send_btn.setMinimumHeight(44)
-        self.send_btn.clicked.connect(self._send)
+        self.send_btn.clicked.connect(self._on_send_clicked)
 
         self.voice_btn = QPushButton("语音", self)
         self.voice_btn.setCursor(Qt.PointingHandCursor)
@@ -633,6 +643,7 @@ class ChatWindow(QWidget):
         self._bridge.confirm_required.connect(self._on_confirm_required)
 
         QShortcut(QKeySequence("Ctrl+Space"), self, activated=self._on_voice)
+        QShortcut(QKeySequence("Esc"), self, activated=self._stop_task)
 
     # ---------- 交互 ----------
 
@@ -891,7 +902,7 @@ class ChatWindow(QWidget):
         speech.triggered.connect(self._toggle_tts)
         menu.addAction("选择音色…").triggered.connect(self._open_voice_dialog)
         root = menu.addAction(
-            "最高权限：开（不再询问）" if self._auto_confirm else "最高权限：关"
+            "完全权限：开（不再询问）" if self._auto_confirm else "完全权限：关（逐次询问）"
         )
         root.setCheckable(True)
         root.setChecked(self._auto_confirm)
@@ -901,17 +912,41 @@ class ChatWindow(QWidget):
         return menu
 
     def _toggle_auto_confirm(self) -> None:
-        """最高权限：读写文件、跑命令一律不再弹确认。"""
+        """完全权限：读写文件、跑命令、生成文件一律不再弹确认。"""
         self._auto_confirm = not self._auto_confirm
         self._bridge.set_auto_confirm(self._auto_confirm)
+        self._refresh_perm_chip()
+        try:
+            save_preference(self._data_dir, auto_confirm=self._auto_confirm)
+        except Exception:
+            pass  # 存不下来不影响本次生效
         note = (
-            "最高权限已打开：接下来读写文件、跑命令都不会再问你"
+            "完全权限已打开：接下来读写文件、跑命令、生成文件都不会再问你"
             if self._auto_confirm
-            else "最高权限已关闭：高风险操作恢复确认"
+            else "完全权限已关闭：高风险操作恢复确认"
         )
         if self._started_chat:
             self.chat.add_note(note)
         self._set_status(note)
+
+    def _refresh_perm_chip(self) -> None:
+        chip = getattr(self, "perm_chip", None)
+        if chip is None:
+            return
+        if self._auto_confirm:
+            chip.setText("权限：完全")
+            chip.setStyleSheet(theme.PERM_CHIP_ON_QSS)
+            chip.setToolTip(
+                "完全权限已打开：写文件、跑命令、生成文档都不再询问。\n"
+                "点一下改回「逐次确认」。这个选择会记住。"
+            )
+        else:
+            chip.setText("权限：询问")
+            chip.setStyleSheet(theme.PERM_CHIP_QSS)
+            chip.setToolTip(
+                "逐次确认：中高风险操作（写文件、跑命令、生成文档）会先问你。\n"
+                "点一下切到「完全权限」，长任务不再被打断。"
+            )
 
     def _toggle_tts(self) -> None:
         self._tts_enabled = not self._tts_enabled
@@ -1172,9 +1207,27 @@ class ChatWindow(QWidget):
     def _set_busy(self, busy: bool) -> None:
         self._busy = busy
         self.input.setEnabled(not busy)
-        self.send_btn.setEnabled(not busy)
+        # 忙的时候这颗按钮变成"停止"：长任务跑到一半总得有个地方能叫停
+        self.send_btn.setText("停止" if busy else "发送")
+        self.send_btn.setEnabled(True)  # 一直可点：闲着是发送，忙着是停止
         if not busy:
             self.input.setFocus()
+
+    def _on_send_clicked(self) -> None:
+        if self._busy:
+            self._stop_task()
+        else:
+            self._send()
+
+    def _stop_task(self) -> None:
+        """叫停当前任务。agent 会在这一步结束后退出循环。"""
+        if not self._busy:
+            return
+        self._bridge.cancel()
+        self._tts_streaming = False
+        self._tts.cancel()
+        self._set_status("正在停止…（当前这一步跑完就停）")
+        self._set_state("idle")
 
     def _set_status(self, text: str) -> None:
         self.status.setText(text)
@@ -1299,6 +1352,11 @@ class ChatWindow(QWidget):
         if not self._tts_enabled:
             if streaming:
                 self._tts.cancel()  # 流到一半被关掉：会话还开着，得主动收
+            return False
+        # "已停止"这种系统口吻的话不用念出来
+        if text.startswith("（已停止"):
+            if streaming:
+                self._tts.cancel()
             return False
         if streaming:
             self._tts.stream_end()

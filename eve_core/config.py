@@ -102,6 +102,9 @@ class ModeConfig:
     temperature: float = 0.7
     # 档位级上下文预算：0 = 继承 [app].context_tokens（同样是 0 就按模型窗口自动）
     context_tokens: int = 0
+    # 档位级步数上限：0 = 用 [app].max_steps。复杂任务（查资料 → 写文件 → 做 PPT）
+    # 十几步根本不够，所以每个档位要能自己定
+    max_steps: int = 0
     label: str = ""  # 显示名，例如「聊天」；留空就用内部 id
 
     @property
@@ -209,6 +212,56 @@ def save_voice_preference(data_dir: Path, **fields) -> Path:
     valid = set(VoiceSettings.__dataclass_fields__)
     for key, value in fields.items():
         if key in valid and value is not None:
+            data[key] = value
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    return path
+
+
+PREFS_FILE = "prefs.json"
+
+
+def _apply_prefs(cfg: AppConfig) -> AppConfig:
+    """界面里改的偏好（最高权限、步数上限）覆盖配置文件。
+
+    和音色一样不回头去改 config.toml——那里有注释和顺序，程序改写容易毁掉
+    手工编辑。`.data/prefs.json` 只是覆盖值，删掉就回到配置文件的值。
+    """
+    path = Path(cfg.data_dir) / PREFS_FILE
+    if not path.exists():
+        return cfg
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return cfg
+    if not isinstance(raw, dict):
+        return cfg
+    if "auto_confirm" in raw:
+        cfg.auto_confirm = bool(raw["auto_confirm"])
+    if "max_steps" in raw:
+        try:
+            cfg.max_steps = max(1, min(60, int(raw["max_steps"])))
+        except (TypeError, ValueError):
+            pass
+    return cfg
+
+
+def save_preference(data_dir: Path, **fields) -> Path:
+    """存一条界面偏好。只接受这里列出的字段。"""
+    path = Path(data_dir) / PREFS_FILE
+    data: dict = {}
+    if path.exists():
+        try:
+            loaded = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                data = loaded
+        except (OSError, json.JSONDecodeError):
+            data = {}
+
+    allowed = {"auto_confirm", "max_steps"}
+    for key, value in fields.items():
+        if key in allowed and value is not None:
             data[key] = value
 
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -336,7 +389,7 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
     )
     voice = _apply_voice_overlay(voice, data_dir)
 
-    return AppConfig(
+    cfg = AppConfig(
         root=root,
         default_mode=default_mode,
         log_dir=log_dir,
@@ -354,3 +407,4 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
         auto_confirm=bool(app.get("auto_confirm", False)),
         voice=voice,
     )
+    return _apply_prefs(cfg)

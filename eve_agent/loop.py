@@ -61,6 +61,7 @@ class Agent:
         self._model_override: str | None = None
         self._provider: Provider | None = None
         self._provider_model_id: str = ""
+        self._cancelled = False  # 用户按了停止；每一步之间检查一次
         self._activate(self.mode_name, reset=True)
 
     # ---------- 档位与模型 ----------
@@ -89,6 +90,9 @@ class Agent:
         self.mode = mode
         self._provider = None  # 档位变了，下次用到再解析
         self._provider_model_id = ""
+        # 步数按档位走：复杂任务（查资料 → 写文件 → 做 PPT）给得多，陪聊给得少
+        steps = int(getattr(mode, "max_steps", 0) or self.cfg.max_steps)
+        self._max_steps = max(MIN_STEPS, min(MAX_STEPS_CAP, steps))
         self.active_tools = [t for t in mode.tools if self.registry.has(t)]
         missing = [t for t in mode.tools if not self.registry.has(t)]
 
@@ -139,6 +143,19 @@ class Agent:
         """丢掉缓存的 provider，下次请求重新解析（改 Key 之后要调它）。"""
         self._provider = None
         self._provider_model_id = ""
+
+    # ---------- 中断 ----------
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancelled
+
+    def cancel(self) -> None:
+        """请求停止。当前这步（模型请求 / 工具执行）跑完就退出循环。
+
+        没法中途掐断一个已经发出的 HTTP 请求，所以停止是"这一步结束后停"。
+        """
+        self._cancelled = True
 
     # ---------- 事件 ----------
 
@@ -344,6 +361,7 @@ class Agent:
     # ---------- 主循环 ----------
 
     def send(self, text: str, confirm: ConfirmFn | None = None) -> str:
+        self._cancelled = False
         self.persona.observe_user(text)
         self.bus.emit("user_message", text=text, protest_level=self.persona.protest_level)
         self.messages.append({"role": "user", "content": text})
@@ -359,6 +377,8 @@ class Agent:
         schemas = self.registry.schemas(self.active_tools) if self.persona.allow_tools else []
 
         for step in range(1, self._max_steps + 1):
+            if self.cancelled:
+                return "（已停止：这是你按下的停止，不是出错）"
             # 每步都量一次：工具结果可能刚把窗口顶爆，必须在发请求前压回去
             self._enforce_context()
             self.bus.emit("thinking", step=step, model=self.model_id)
@@ -420,6 +440,8 @@ class Agent:
             )
 
             for call in result.tool_calls:
+                if self.cancelled:
+                    break
                 self.bus.emit("tool_start", name=call.name, args=call.arguments)
                 output = self.registry.dispatch(
                     call.name,

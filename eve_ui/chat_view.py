@@ -115,12 +115,41 @@ class MessageRow(QWidget):
         self.bubble.updateGeometry()
 
 
+def _args_preview(name: str, args: dict, limit: int = 110) -> str:
+    """工具参数的一行摘要。
+
+    有的工具参数里塞的是整篇文章（office_write 的 sections），原样渲染会撑出一大块，
+    所以按工具类型挑重点：计划只看几步，写文件只看路径。
+    """
+    if not args:
+        return "无参数"
+
+    if name == "todo_write":
+        items = args.get("items")
+        if isinstance(items, list):
+            current = ""
+            for item in items:
+                if isinstance(item, dict) and item.get("status") == "in_progress":
+                    current = str(item.get("content") or "")
+            tail = f" · {current}" if current else ""
+            return f"{len(items)} 步{tail}"
+
+    bits: list[str] = []
+    for key, value in args.items():
+        text = str(value).replace("\n", " ")
+        if len(text) > 36:
+            text = text[:36] + "…"
+        bits.append(f"{key}={text}")
+    line = "，".join(bits)
+    return line if len(line) <= limit else line[:limit] + "…"
+
+
 class ToolRow(QWidget):
     """工具调用的单行提示：居中小胶囊，执行完原地改状态。"""
 
     def __init__(self, name: str, args: dict, parent=None):
         super().__init__(parent)
-        preview = "，".join(f"{k}={v}" for k, v in args.items()) or "无参数"
+        preview = _args_preview(name, args)
         self.name = name
         self.label = QLabel(f"⚙ {name}（{preview}）", self)
         self.label.setAlignment(Qt.AlignCenter)

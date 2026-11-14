@@ -11,8 +11,10 @@
 
 from __future__ import annotations
 
+import os
 import re
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +22,30 @@ from .registry import ToolRegistry, ToolSpec
 
 DEFAULT_TIMEOUT = 60.0
 MAX_TIMEOUT = 600.0
+
+
+def _shell_env() -> dict[str, str]:
+    """给子进程的 PATH 补上当前解释器所在目录。
+
+    这台机器的 Python 不在系统 PATH 里（装的时候没勾），agent 写 `python xxx`
+    会直接 exit 9009。"模型写了一条看起来对的命令却跑不起来"非常消耗步数，
+    所以这里替它补上，`python` / `pip` 都能直接用。
+    """
+    env = dict(os.environ)
+    exe_dir = Path(sys.executable).parent
+    # Windows 的环境变量名大小写不敏感，但 dict(os.environ) 的键保留了原始写法（通常是 Path）。
+    # 直接写 env["PATH"] 会多出第二个同名变量，子进程还是按老的 Path 找命令。
+    path_key = next((key for key in env if key.lower() == "path"), "PATH")
+    parts = [p for p in env.get(path_key, "").split(os.pathsep) if p]
+    # 必须**挪到最前面**，不是"没有就加"：系统里可能已经有一个 D:\python，
+    # 但排在 Microsoft Store 的 python.exe 占位符后面，那个占位符只会 exit 9009。
+    for extra in (str(exe_dir / "Scripts"), str(exe_dir)):
+        wanted = extra.lower().rstrip("\\")
+        parts = [p for p in parts if p.lower().rstrip("\\") != wanted]
+        parts.insert(0, extra)
+    env[path_key] = os.pathsep.join(parts)
+    env.setdefault("PYTHONIOENCODING", "utf-8")
+    return env
 OUTPUT_CHARS = 6000
 
 # 匹配到就拒绝执行。宁可误杀，也不让"清盘""关机"这类命令真的跑起来。
@@ -107,6 +133,7 @@ def shell_exec(args: dict[str, Any], root: Path) -> str:
             cwd=str(cwd),
             capture_output=True,
             timeout=timeout,
+            env=_shell_env(),
             creationflags=creationflags,
         )
     except subprocess.TimeoutExpired:

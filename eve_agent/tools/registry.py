@@ -108,6 +108,7 @@ def build_default_registry(cfg=None) -> ToolRegistry:
     from .builtin import register_builtin
     from .desktop import register_desktop
     from .office import register_office
+    from .planning import register_planning
     from .shell import register_shell
     from .web import register_web
     from .workspace import register_workspace
@@ -115,6 +116,7 @@ def build_default_registry(cfg=None) -> ToolRegistry:
     registry = ToolRegistry()
     register_builtin(registry)
     register_desktop(registry)
+    register_planning(registry, cfg)
     register_web(registry, cfg)
     register_workspace(registry, cfg)
     register_office(registry, cfg)

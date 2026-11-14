@@ -112,6 +112,32 @@ QPushButton:hover {{
 QPushButton::menu-indicator {{ width: 0; }}
 """
 
+# 权限开关：平时低调，打开"完全权限"时整颗变成警示色——它在关掉所有确认，
+# 用户随时应该能一眼看见自己现在处在哪个状态。
+PERM_CHIP_QSS = f"""QPushButton {{
+    color: {TEXT2};
+    background: {PANEL};
+    border: 1px solid {LINE};
+    border-radius: 10px;
+    padding: 0 8px;
+    font-family: {FONT_STACK};
+    font-size: 11px;
+}}
+QPushButton:hover {{ color: {TEXT0}; border-color: #3A4350; }}
+"""
+
+PERM_CHIP_ON_QSS = f"""QPushButton {{
+    color: {WARN};
+    background: rgba(240, 181, 99, 0.12);
+    border: 1px solid {WARN};
+    border-radius: 10px;
+    padding: 0 8px;
+    font-family: {FONT_STACK};
+    font-size: 11px;
+}}
+QPushButton:hover {{ color: {WARN}; border-color: {WARN}; }}
+"""
+
 # 许可交互的两个按钮：允许（实心强调）与拒绝（描边低调）。
 # 悬浮球气泡和主窗口卡片共用这一套，避免两处长得不一样。
 ALLOW_BUTTON_QSS = f"""

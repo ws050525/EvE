@@ -101,6 +101,97 @@ def makes_a_real_xlsx():
 
 
 @case
+def docx_can_be_appended_in_parts():
+    """长文章分块写：先建文件，再 append 续章节，内容不能丢也不能覆盖。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp).resolve()
+        first = office_write(
+            {
+                "kind": "docx",
+                "path": "长文.docx",
+                "title": "关于代理",
+                "sections": [{"heading": "一、是什么", "body": "第一段。"}],
+            },
+            root,
+        )
+        assert first.startswith("[ok]"), first
+
+        second = office_write(
+            {
+                "kind": "docx",
+                "path": "长文.docx",
+                "append": True,
+                "sections": [{"heading": "二、怎么做", "body": "第二段。", "level": 2}],
+            },
+            root,
+        )
+        assert second.startswith("[ok]") and "追加" in second, second
+
+        from docx import Document
+
+        doc = Document(str(root / "长文.docx"))
+        text = "\n".join(p.text for p in doc.paragraphs)
+        assert "一、是什么" in text and "第一段。" in text, text
+        assert "二、怎么做" in text and "第二段。" in text, text
+        headings = [p for p in doc.paragraphs if p.style.name.startswith("Heading")]
+        assert len(headings) >= 2, [p.text for p in headings]
+
+
+@case
+def pptx_can_be_appended_in_parts():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp).resolve()
+        office_write(
+            {"kind": "pptx", "path": "长PPT.pptx", "title": "汇报", "sections": [SLIDES[0]]},
+            root,
+        )
+        out = office_write(
+            {
+                "kind": "pptx",
+                "path": "长PPT.pptx",
+                "append": True,
+                "sections": [SLIDES[1], {"heading": "附录", "bullets": [{"text": "数据", "level": 1}]}],
+            },
+            root,
+        )
+        assert out.startswith("[ok]") and "追加" in out, out
+
+        from pptx import Presentation
+
+        prs = Presentation(str(root / "长PPT.pptx"))
+        # 封面 + 第一页 + 追加的两页；追加时不能重新加封面
+        assert len(prs.slides) == 4, len(prs.slides)
+
+
+@case
+def pptx_keeps_notes_and_levels():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp).resolve()
+        office_write(
+            {
+                "kind": "pptx",
+                "path": "讲稿.pptx",
+                "title": "带讲稿",
+                "sections": [
+                    {
+                        "heading": "要点",
+                        "bullets": ["主线", {"text": "细节", "level": 1}],
+                        "notes": "这里提醒自己讲慢一点。",
+                    }
+                ],
+            },
+            root,
+        )
+        from pptx import Presentation
+
+        prs = Presentation(str(root / "讲稿.pptx"))
+        slide = prs.slides[1]
+        assert "讲慢一点" in slide.notes_slide.notes_text_frame.text
+        body = slide.placeholders[1].text_frame
+        assert body.paragraphs[1].level == 1, body.paragraphs[1].level
+
+
+@case
 def suffix_is_filled_in_when_missing():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp).resolve()

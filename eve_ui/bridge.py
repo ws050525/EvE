@@ -188,6 +188,16 @@ class AgentWorker(QObject):
         except Exception as exc:
             self.failed.emit(str(exc))
 
+    @Slot()
+    def cancel(self) -> None:
+        """停止当前任务：agent 会在这一步结束后退出循环。
+
+        直接改标志位，不走信号排队——worker 此刻正阻塞在模型请求里，排队等于没停。
+        """
+        if self._agent is not None:
+            self._agent.cancel()
+        self._decision.set()  # 顺手解开可能挂着的工具确认
+
     @Slot(str)
     def set_mode(self, mode_name: str) -> None:
         if self._agent is None:
@@ -344,6 +354,10 @@ class AgentBridge(QObject):
         if self._thread.isRunning():
             return
         self._thread.start()
+
+    def cancel(self) -> None:
+        # 直接调用：worker 正阻塞在模型请求里，排队的信号要等它跑完才会被处理
+        self._worker.cancel()
 
     def ask(self, text: str) -> None:
         self.ask_requested.emit(text)
