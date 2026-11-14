@@ -159,9 +159,9 @@ def capture(
                 origin = (box[0] + base_origin[0], box[1] + base_origin[1])
                 window_title = title
 
-    if max(image.width, image.height) > MAX_SIDE or image.width * image.height > MAX_PIXELS:
-        image, _scale = _fit(image)
-
+    # 存原图，不在这里缩：缩了以后"图上的像素"就对不上屏幕像素，
+    # locate() 算出的坐标会整体偏小（踩过：点哪儿都落在左上角一带）。
+    # 真正送模型前由 _prepare() 缩放，并把缩放比交给坐标换算。
     if path is None:
         base = Path(folder) if folder else Path(".tmp") / "vision"
         base.mkdir(parents=True, exist_ok=True)

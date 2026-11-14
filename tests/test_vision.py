@@ -266,6 +266,21 @@ def capture_returns_geometry():
         assert isinstance(shot.origin, tuple) and len(shot.origin) == 2
 
 
+@case
+def capture_keeps_full_resolution():
+    """截图不能被缩：缩了之后"图上的像素"就对不上屏幕像素，定位会整体偏小。"""
+    import ctypes
+
+    from eve_core import vision
+
+    user32 = ctypes.windll.user32
+    expect = (int(user32.GetSystemMetrics(78)), int(user32.GetSystemMetrics(79)))
+    with tempfile.TemporaryDirectory() as tmp:
+        shot = vision.capture(path=Path(tmp) / "full.png", full_screen=True)
+    assert shot.size == expect, (shot.size, expect)
+    assert shot.origin == (0, 0), shot.origin
+
+
 def main() -> int:
     failed = 0
     for fn in CHECKS:

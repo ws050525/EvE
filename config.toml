@@ -88,7 +88,7 @@ tts_fx_compression = 0.30    # 压缩 0–1，大了压扁、发硬
 # 从 Aico 项目复制一份到本项目 tools/ 之后，把这里改成 "tools/llama.cpp/llama-server.exe"
 bin = "D:/1/Aico AI - 1.1/llama.cpp/llama-server.exe"
 threads = 8
-extra_args = ["--image-max-tokens", "256"]  # 视觉输入上限：Qwen3-VL 默认给很多 token，4B 上纯浪费时间
+extra_args = ["--image-max-tokens", "1024"]  # 视觉输入上限。给太小(GUI 定位会瞎点)，给太大(慢)；1024 是实测的平衡点
 
 # ---------- 本地模型（现在只剩"眼睛"这一个用途）----------
 #
