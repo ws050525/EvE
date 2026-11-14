@@ -19,6 +19,7 @@ from eve_core.runtime import RuntimeManager
 from eve_core.usage import UsageTracker
 
 from . import checkpoint as checkpoints
+from . import shared
 from .checkpoint import TaskCheckpoint
 from .context import (
     SUMMARY_SYSTEM,
@@ -51,7 +52,8 @@ class Agent:
         self.cfg = cfg
         self.bus = bus or EventBus()
         self.runtime = runtime or RuntimeManager(cfg, on_event=self._emit_runtime)
-        self.registry: ToolRegistry = build_default_registry(cfg)
+        # 视觉工具要用 agent 自己的 runtime：本地视觉引擎只能起一个，不能各开各的
+        self.registry: ToolRegistry = build_default_registry(cfg, self.runtime)
         self.persona = Persona()
         self.usage = UsageTracker()
         self.mode_name = mode_name or cfg.default_mode
@@ -252,11 +254,23 @@ class Agent:
         self.bus.emit(kind, **data)
 
     def _outgoing(self) -> list[dict[str, Any]]:
-        """把人格状态和历史摘要临时拼进 system prompt，不改动会话本身。"""
+        """把人格状态、历史摘要、共享笔记临时拼进 system prompt，不改动会话本身。"""
         extra = self.persona.prompt_extra()
         summary = getattr(self, "_summary", "")
+        # 黑板按预算缩放：小预算时少放几条，别把上下文挤爆
+        budget = self.context_policy.max_prompt_tokens
+        shared_block = shared.board_for(self.cfg.data_dir).prompt_block(
+            limit=max(1, min(6, budget // 400)),
+            chars=max(100, min(600, budget // 8)),
+        )
         head = "\n\n".join(
-            part for part in (extra, f"## 先前对话摘要\n{summary}" if summary else "") if part
+            part
+            for part in (
+                extra,
+                f"## 先前对话摘要\n{summary}" if summary else "",
+                shared_block,
+            )
+            if part
         )
         out = list(self.messages)
         if head and out and out[0].get("role") == "system":
@@ -450,6 +464,13 @@ class Agent:
 
     def send(self, text: str, confirm: ConfirmFn | None = None) -> str:
         self._cancelled = False
+        # 共享笔记里要能看出"这是谁写的"：档位 + 这句请求的开头
+        label = (text or "").strip().replace("\n", " ")
+        if label.startswith("（续跑）"):
+            label = "续跑"
+        shared.set_source(
+            f"{self.mode_label}·{label[:12]}" if label else self.mode_label
+        )
         self.persona.observe_user(text)
         self.bus.emit("user_message", text=text, protest_level=self.persona.protest_level)
         self.messages.append({"role": "user", "content": text})

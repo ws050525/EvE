@@ -1,4 +1,4 @@
-﻿# EVE 记忆报告（截至 v0.8.0）
+﻿# EVE 记忆报告（截至 v0.9.0）
 
 > 给下一个对话用：读完这份就能接手，不用翻聊天记录。
 > 这份是**对话总结**，不是交接清单；上一版留下的 `docs/HANDOFF.md` 已删（内容并进这份）。
@@ -10,7 +10,7 @@
 一个本地优先的个人 agent：**本地模型陪聊 + 操作电脑，云端模型干重活**。
 
 - 仓库：https://github.com/ws050525/EvE （分支 `main`）
-- 当前版本：`0.8.0`（`eve_core/version.py`），最新标签 `v0.8.0`
+- 当前版本：`0.9.0`（`eve_core/version.py`），最新标签 `v0.9.0`
 - 工作目录：`D:\1\EVE`
 
 ## 2. 环境（容易踩的坑）
@@ -56,7 +56,7 @@ eve_ui/     界面
   app.py 入口与开发期开关；main_window 主窗；chat_view 气泡；mobius 莫比乌斯；orb 悬浮球
   bridge.py agent 跑在 QThread；voice.py 语音线程；tts.py 播报线程；theme.py 配色
 eve_cli.py  eve_gui.py  eve_tts.py（播调试听工具）  tools/（模型下载、播报预览）
-tests/      12 个文件 / 191 项，全部不需要模型
+tests/      14 个文件 / 209 项，全部不需要模型
 ```
 
 ## 4. 三个档位
@@ -65,7 +65,7 @@ tests/      12 个文件 / 191 项，全部不需要模型
 | --- | --- | --- | --- | --- |
 | `chat` | 聊天 | 本地 GGUF | 无 | 纯聊天，不收成悬浮球，步数 12 |
 | `desktop` | 桌面 | DeepSeek Flash（云端） | 12 个桌面/联网/计划工具 | 收成悬浮球，步数 20 |
-| `work` | 工作 | DeepSeek Flash | 24 个（含计划、多文件、浏览器） | 收成悬浮球，步数 32 |
+| `work` | 工作 | DeepSeek Flash | 29 个（计划/多文件/浏览器/视觉/共享） | 收成悬浮球，步数 32 |
 
 内部 id 保持英文，显示名走 `[modes.*] label`。切档会重置上下文（prompt + 工具集变了）。
 **步数上限按档位走**（`[modes.*] max_steps`），`[app] max_steps` 只是兜底。
@@ -88,6 +88,7 @@ tests/      12 个文件 / 191 项，全部不需要模型
   见第 12 节；顺手清掉 537MB 没用的音色和 `.tmp/`。
 - **0.6.10**：声音不再发硬——后处理从"提亮优先"改成"柔和优先"，语速 1.12→1.05，
   句间留 70ms 换气，见 12.6 节。
+- **0.9.0**：跨任务共享笔记、浏览器多标签页、本地视觉当"眼睛"（screen_read / screen_locate），见第 16 节。
 - **0.8.0**：浏览器真交互（Edge CDP，零下载）、多任务并行（最多 3 个）、断点列表，见第 15 节。
 - **0.7.1**：断点续跑 + 多文件资料（`checkpoint.py` / `project_init` / `project_status`），见第 14 节。
 - **0.7.0**：agent 能力节点——计划工具 `todo_write`、长文分块写（office_write append）、
@@ -176,7 +177,7 @@ tests/      12 个文件 / 191 项，全部不需要模型
 & 'D:\python\python.exe' tests\test_voice.py # 单个测试
 ```
 
-测试共 12 个文件 / 191 项：persona / context / workspace / cost / apps / office / voice /
+测试共 14 个文件 / 209 项：persona / context / workspace / cost / apps / office / voice /
 agent_loop / planning / checkpoint / project（语音 50 项；计划 11 项；断点 7 项；多文件 8 项）。
 
 下载语音模型（SenseVoice + silero VAD）：
@@ -189,7 +190,7 @@ agent_loop / planning / checkpoint / project（语音 50 项；计划 11 项；�
 ## 11. 给下一个对话的开场建议
 
 > 读 `docs/MEMORY.md`。语音（第 12 节）和 agent 能力（第 13 节）两个节点都已完成，
-> 测试 191/191，代码在本地和 GitHub 上都是最新。
+> 测试 209/209，代码在本地和 GitHub 上都是最新。
 > 剩下的主要是**真人验收**：喊「伊芙」听播报、开完全权限跑一个真实复杂任务、
 > 看长任务中途按停止会不会干净退出。
 > 然后是打包（PyInstaller one-folder，模型外置）。
@@ -452,3 +453,63 @@ id 用 `task-<时间>-<4位随机>`：同一秒起几个任务不会撞车（第
 - 任务条只显示在内存里，重启后只有断点列表能捞回来。
 - 浏览器只支持单个标签页（多标签要再包一层）。
 - 打包（PyInstaller）按用户要求继续往后放。
+
+## 16. 跨任务共享 / 多标签页 / 视觉（v0.9.0）
+
+### 16.1 共享笔记（`eve_agent/shared.py` + `tools/shared_tools.py`）
+
+多任务之间传结论：`share_write(title, content)` / `share_read(title="")` / `share_forget(title)`。
+
+- 落在 `.data/shared.json`，**重启也在**（任务条是内存里的，黑板不是）。
+- 每条记来源（`档位·请求开头`），读的时候知道是谁说的。
+- 正文 ≤2000 字、最多 20 条，写满丢最旧——它是"结论板"，不是第二个上下文。
+- `Agent._outgoing()` 每步把黑板摘要拼进 system prompt（最多 6 条 × 600 字），
+  所以**每个任务每步都能看到别人的进展，但不污染各自的对话历史**。
+
+**实测**：任务 A 查完 4060 写一条笔记；任务 B（另一个进程）只 `share_read`，
+就答出了 8GB GDDR6 + 带宽 + 来源，没有联网。跨进程、跨重启都成立。
+
+### 16.2 浏览器多标签页
+
+`browser_tabs / browser_new_tab / browser_switch_tab / browser_close_tab`，
+`browser_open(..., new_tab=true)` 也能直接开新页。
+
+实现坑：`/json/new?url` 的跳转是**异步**的，直接建会先读到 about:blank
+（实测：标题是空的、接着 read 报"没有可读文本"）。改成先 `about:blank` 建页、
+自己 `Page.navigate`、再等 `location.href` 变成 http 才开始用。
+
+`page_targets()` 里只留 `type == "page"` 且不是 `chrome-extension://` 的——
+Edge 自带一堆扩展后台页，不过滤的话序号全乱。
+
+### 16.3 视觉：让云端主控"看"屏幕（`eve_core/vision.py` + `tools/vision_tools.py`）
+
+问题：干活的档位跑云端（DeepSeek 不收图），桌面操作又必须看。
+做法：**云端下命令，本地 Qwen3-VL 当眼睛**。
+
+| 工具 | 作用 |
+| --- | --- |
+| `screen_read(question)` | 截屏 → 问本地视觉模型 → 返回文字描述 |
+| `screen_locate(target)` | 截屏 → 问"某控件在哪" → 返回**可点击的屏幕坐标**（已是真实坐标） |
+| `image_read(path, question)` | 对已有图片提问 |
+
+坐标换算：图会先缩到 1600px 再送模型（省 token、快一倍），模型给的是**图上的像素**，
+`locate()` 用缩放比例换回真实屏幕坐标——不换算的话点下去会偏。
+
+代价：第一次调用要拉起本地引擎（约 30s、4–5GB 显存），之后每张图 12–20s。
+不用就不占。
+
+### 16.4 实测（2026-11-14）
+
+- **打开软件**：抖音 / Steam / 网易云音乐 三个都开起来了，窗口标题确认（¥0.0026）。
+- **操作软件**：网易云任务走到 24 步上限。过程是通的——`screen_read` 说"搜索框在顶部中央"，
+  `image_read` 给出坐标 (340,155)-(505,190)，`mouse_click(422,172)` 点中，输入 + 回车，
+  再截图确认"搜索结果第一首不是《晴天》"。**卡在 24 步和每次看图 20–40s**，没跑完。
+- **共享笔记**：A 写、B 读，B 只凭笔记答对（见 16.1）。
+- **多标签页**：开两页、列序号、切回、关掉，全部正确。
+
+### 16.5 结论与下一步
+
+视觉链路可用但**慢**（4B 视觉模型 + 2560×1600 截图）。想让它真正"会用软件"：
+1. 视觉模型换更小的（如 Qwen2.5-VL-3B int4）或只截活动窗口，把单次压到 3–5s；
+2. 给桌面档更长的步数（现在 20，实测要 30+）；
+3. 优先用快捷键（Ctrl+F 这类）绕开"找控件"，把视觉留给验证。

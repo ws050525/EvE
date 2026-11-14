@@ -133,25 +133,36 @@ def cancel_stops_before_the_next_tool_runs():
 
 @case
 def context_compaction_keeps_system_and_appends_summary():
-    agent = _agent("chat")
-    # 预算要建在 system prompt 之上：system 是底线，永远不会被裁，
-    # 预算比它还小的话再怎么压都不可能达标。
-    system_tokens = messages_tokens([agent.messages[0]])
-    agent.cfg.context_tokens = system_tokens + 400
-    _fill(agent, 10)
+    import tempfile
 
-    used_before, budget = agent.context_usage
-    assert used_before > budget, (used_before, budget)
+    with tempfile.TemporaryDirectory() as tmp:
+        agent = _agent("chat")
+        # 共享黑板会拼进 prompt：用临时目录，别让真实的 .data/shared.json 影响预算
+        agent.cfg.data_dir = Path(tmp)
+        from eve_agent import shared
 
-    agent._enforce_context()
+        shared._BOARD = None
 
-    used_after, _ = agent.context_usage
-    assert used_after <= budget, (used_after, budget)
-    assert agent.messages[0]["role"] == "system"
-    assert agent.messages[0]["content"].startswith(agent.cfg.mode("chat").system_prompt.read_text(encoding="utf-8").strip()[:40])
-    assert agent.summary, "超预算后应该留下摘要"
-    assert "先前对话摘要" in agent._outgoing()[0]["content"]
-    assert agent._provider.calls, "应该让模型写过摘要"
+        # 预算要建在 system prompt 之上：system 是底线，永远不会被裁，
+        # 预算比它还小的话再怎么压都不可能达标。
+        system_tokens = messages_tokens([agent.messages[0]])
+        agent.cfg.context_tokens = system_tokens + 400
+        _fill(agent, 10)
+
+        used_before, budget = agent.context_usage
+        assert used_before > budget, (used_before, budget)
+
+        agent._enforce_context()
+
+        used_after, _ = agent.context_usage
+        assert used_after <= budget, (used_after, budget)
+        assert agent.messages[0]["role"] == "system"
+        assert agent.messages[0]["content"].startswith(
+            agent.cfg.mode("chat").system_prompt.read_text(encoding="utf-8").strip()[:40]
+        )
+        assert agent.summary, "超预算后应该留下摘要"
+        assert "先前对话摘要" in agent._outgoing()[0]["content"]
+        assert agent._provider.calls, "应该让模型写过摘要"
 
 
 @case

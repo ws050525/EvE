@@ -20,6 +20,11 @@ auto_confirm = false         # 最高权限：所有工具（含写文件、跑�
 # ---------- work 档的边界 ----------
 work_root = "."              # 文件工具和 shell_exec 的根目录，越界一律拒绝
 
+# ---------- 视觉（本地 Qwen3-VL 当"眼睛"）----------
+# 云端模型不收图，桌面操作又需要看。留空 = 自动挑第一个带 mmproj 的模型。
+[vision]
+model = ""                   # 例如 "qwen3vl-4b"
+
 # ---------- 浏览器真交互 ----------
 # 用本机已装的 Edge（走 CDP），不下载任何浏览器。
 # 需要人工登录 / 过验证码时，把 headless 改成 false，或者让 agent 调 browser_open(show=true)。
@@ -146,7 +151,7 @@ temperature = 0.7
 label = "桌面"
 model = "deepseek-flash"     # 工具调用本地 4B 太不稳（参数经常错），桌面档也走云端
 system_prompt = "prompts/desktop.md"
-tools = ["todo_write", "app_launch", "app_list", "window_list", "window_focus", "window_close", "key_type", "key_hotkey", "mouse_click", "screen_capture", "web_search", "http_get"]
+tools = ["todo_write", "share_write", "share_read", "screen_read", "screen_locate", "image_read", "app_launch", "app_list", "window_list", "window_focus", "window_close", "key_type", "key_hotkey", "mouse_click", "screen_capture", "web_search", "http_get"]
 require_confirm = true
 max_tokens = 4096            # 写到编辑器里的内容可能很长；512 会把工具参数截断
 max_steps = 20
@@ -156,7 +161,7 @@ temperature = 0.2
 label = "工作"
 model = "deepseek-flash"     # 默认 flash：够用且便宜；要更强就在模型菜单里临时换 pro
 system_prompt = "prompts/work.md"
-tools = ["todo_write", "project_init", "project_status", "web_search", "http_get", "browser_open", "browser_read", "browser_click", "browser_type", "browser_wait", "browser_screenshot", "browser_back", "browser_close", "fs_read", "fs_write", "fs_list", "office_write", "shell_exec", "app_launch", "app_list", "window_list", "window_focus", "key_type", "screen_capture"]
+tools = ["todo_write", "project_init", "project_status", "share_write", "share_read", "screen_read", "screen_locate", "image_read", "web_search", "http_get", "browser_open", "browser_read", "browser_click", "browser_type", "browser_wait", "browser_screenshot", "browser_back", "browser_close", "fs_read", "fs_write", "fs_list", "office_write", "shell_exec", "app_launch", "app_list", "window_list", "window_focus", "key_type", "screen_capture"]
 require_confirm = true
 max_tokens = 8192            # 写文章/长文档时一次几千字，2048 会被砍成半句
 max_steps = 32               # 查资料 → 写正文 → 做 PPT → 自检，十几步不够用

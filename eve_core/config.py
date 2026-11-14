@@ -134,6 +134,9 @@ class AppConfig:
     browser_port: int = 9333
     browser_binary: str = ""  # 留空自动找 Edge/Chrome
     browser_profile: str = ""  # 留空用 <work_root>/.tmp/browser-profile
+    # 视觉：桌面操作要"看"，但云端模型不收图，所以用本地 Qwen3-VL 当眼睛。
+    # 留空 = 自动挑第一个带 mmproj 的模型。
+    vision_model: str = ""
     voice: "VoiceSettings" = field(default_factory=lambda: _default_voice())
 
     def model(self, model_id: str) -> ModelConfig:
@@ -332,6 +335,7 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
         raise ConfigError(f"default_mode '{default_mode}' 不在档位列表里")
 
     browser = data.get("browser", {})
+    vision_cfg = data.get("vision", {})
     voice_raw = data.get("voice", {})
     fallbacks_raw = voice_raw.get("asr_fallbacks")
     if fallbacks_raw is None:
@@ -415,6 +419,7 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
         browser_port=int(browser.get("port", 9333)),
         browser_binary=str(resolve(browser["binary"])) if browser.get("binary") else "",
         browser_profile=str(resolve(browser["profile"])) if browser.get("profile") else "",
+        vision_model=str(vision_cfg.get("model") or ""),
         voice=voice,
     )
     return _apply_prefs(cfg)

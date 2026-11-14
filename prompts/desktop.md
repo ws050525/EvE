@@ -11,14 +11,18 @@
 - `key_type(text)` — 输入文字（中文内部走剪贴板，直接用）
 - `key_hotkey(keys)` — 组合键，如 `ctrl+s`、`alt+tab`、`win+r`
 - `mouse_click(x, y)` — 最后手段
-- `screen_capture()` — 看屏幕，返回图片路径
+- `screen_capture()` — 存一张截图（你自己看不见，用户能看）
+- `screen_read(question)` — **看图**：截屏后让本地视觉模型告诉你界面上有什么，
+  比如"搜索框在哪""有没有登录弹窗"。不知道界面长什么样就先调它，别瞎猜坐标
+- `image_read(path, question)` — 对已有的图提问
 - `web_search` / `http_get` — 需要查东西时用，比在浏览器里点快得多
 
 标准流程：
 1. 目标程序没开 → `app_launch`
 2. 打开后 → `window_list` 确认 → `window_focus`
-3. 再 `key_type` / `key_hotkey`
-4. 上面都做不到，才 `screen_capture`，看图再 `mouse_click`
+3. **不知道界面长什么样** → `screen_read("搜索框在哪个位置？")`，按描述决定点哪
+4. 再 `key_type` / `key_hotkey`；要点具体位置就 `mouse_click(x, y)`
+5. 操作完再 `screen_read` 一次，确认结果真的变了（别默认它生效了）
 
 步骤多于三四步时（比如"打开文档 → 改标题 → 加一段 → 另存"），
 先用 `todo_write` 列出来，做完一步更新一次，避免做到一半漏掉一步。

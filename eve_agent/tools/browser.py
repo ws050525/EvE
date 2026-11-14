@@ -22,6 +22,7 @@ import shutil
 import subprocess
 import threading
 import time
+import urllib.parse
 import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
@@ -68,13 +69,15 @@ class BrowserSettings:
 
 
 class BrowserSession:
-    """一个进程内只开一个浏览器。所有工具调用共用这个会话。"""
+    """一个进程内只开一个浏览器、但可以有多个标签页。"""
 
     def __init__(self, settings: BrowserSettings, work_root: Path):
         self.settings = settings
         self.work_root = Path(work_root)
         self._proc: subprocess.Popen | None = None
-        self._ws = None
+        # 每开一个标签页就存一条 WS：查资料时几页并排，来回切不用重新加载
+        self._pages: dict[str, Any] = {}
+        self._active: str = ""
         self._msg_id = 0
         self._lock = threading.Lock()
         self._headless = settings.headless
@@ -83,8 +86,12 @@ class BrowserSession:
     # ---------- 生命周期 ----------
 
     @property
+    def _ws(self):
+        return self._pages.get(self._active)
+
+    @property
     def running(self) -> bool:
-        return self._ws is not None and self._proc is not None and self._proc.poll() is None
+        return bool(self._pages) and self._proc is not None and self._proc.poll() is None
 
     def ensure(self, show: bool | None = None) -> None:
         if self.running:
@@ -125,13 +132,25 @@ class BrowserSession:
         )
 
         targets = self._wait_for_targets()
-        page = next((item for item in targets if item.get("type") == "page"), None)
+        page = next(
+            (item for item in targets if item.get("type") == "page"), None
+        )
         if page is None:
             raise RuntimeError("浏览器起来了但没有可用的页面目标")
+        self._connect(page)
 
-        import websocket  # websocket-client
+    def _connect(self, target: dict) -> None:
+        """连上一个标签页并把它设为当前页。"""
+        target_id = str(target.get("id") or "")
+        url = str(target.get("webSocketDebuggerUrl") or "")
+        if not target_id or not url:
+            raise RuntimeError("标签页信息不完整，连不上")
+        if target_id not in self._pages:
+            import websocket  # websocket-client
 
-        self._ws = websocket.create_connection(page["webSocketDebuggerUrl"], timeout=CMD_TIMEOUT)
+            connection = websocket.create_connection(url, timeout=CMD_TIMEOUT)
+            self._pages[target_id] = connection
+        self._active = target_id
         self._call("Page.enable")
         self._call("Runtime.enable")
 
@@ -151,12 +170,13 @@ class BrowserSession:
         raise RuntimeError(f"连不上浏览器调试端口 {self.settings.port}：{last}")
 
     def close(self) -> None:
-        try:
-            if self._ws is not None:
-                self._ws.close()
-        except Exception:
-            pass
-        self._ws = None
+        for connection in list(self._pages.values()):
+            try:
+                connection.close()
+            except Exception:
+                pass
+        self._pages = {}
+        self._active = ""
         proc = self._proc
         self._proc = None
         if proc is not None:
@@ -168,6 +188,110 @@ class BrowserSession:
                     proc.kill()
                 except Exception:
                     pass
+
+    # ---------- 标签页 ----------
+
+    def _http(self, path: str, method: str = "GET") -> Any:
+        url = f"http://127.0.0.1:{self.settings.port}{path}"
+        request = urllib.request.Request(url, method=method)
+        with urllib.request.urlopen(request, timeout=10) as response:
+            raw = response.read().decode("utf-8", "replace")
+        if not raw.strip():
+            return None
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return raw
+
+    def page_targets(self) -> list[dict]:
+        """只留真正的网页标签（扩展后台页、service worker 都不算）。"""
+        data = self._http("/json/list") or []
+        if not isinstance(data, list):
+            return []
+        pages = []
+        for item in data:
+            if item.get("type") != "page":
+                continue
+            url = str(item.get("url") or "")
+            if url.startswith(("chrome-extension://", "devtools://")):
+                continue
+            pages.append(item)
+        return pages
+
+    def new_tab(self, url: str) -> dict:
+        if not url.startswith(("http://", "https://")):
+            raise ValueError("只支持 http/https 地址")
+        self.ensure()
+        # 先用 about:blank 建页，再自己 navigate：/json/new?url 的跳转是异步的，
+        # 直接建会读到 about:blank（实测过）。
+        target = self._http("/json/new?about:blank", "PUT")
+        if not isinstance(target, dict) or not target.get("webSocketDebuggerUrl"):
+            raise RuntimeError("开新标签页失败")
+        self._connect(target)
+        self._navigate(url)
+        return self.info()
+
+    def _navigate(self, url: str) -> None:
+        """导航并等到真的停在 http(s) 页面上（不是 about:blank）。"""
+        self._call("Page.navigate", {"url": url})
+        deadline = time.time() + NAV_TIMEOUT
+        while time.time() < deadline:
+            try:
+                href = str(self._eval("location.href") or "")
+            except Exception:
+                href = ""
+            if href.startswith("http"):
+                self._wait_ready()
+                return
+            time.sleep(0.2)
+        raise RuntimeError(f"打开超时：{url}")
+
+    def list_tabs(self) -> list[dict]:
+        pages = self.page_targets()
+        out = []
+        for index, page in enumerate(pages, 1):
+            out.append(
+                {
+                    "index": index,
+                    "title": str(page.get("title") or "").strip()[:60],
+                    "url": str(page.get("url") or ""),
+                    "active": str(page.get("id") or "") == self._active,
+                }
+            )
+        return out
+
+    def switch_tab(self, index: int) -> dict:
+        pages = self.page_targets()
+        if not pages:
+            raise RuntimeError("没有可切换的标签页")
+        if not 1 <= index <= len(pages):
+            raise RuntimeError(f"标签页只有 {len(pages)} 个，没有第 {index} 个")
+        self._connect(pages[index - 1])
+        self._wait_ready(timeout=5)
+        return self.info()
+
+    def close_tab(self, index: int | None = None) -> bool:
+        pages = self.page_targets()
+        if not pages:
+            return False
+        if index is None:
+            target_id = self._active
+        else:
+            if not 1 <= index <= len(pages):
+                raise RuntimeError(f"标签页只有 {len(pages)} 个，没有第 {index} 个")
+            target_id = str(pages[index - 1].get("id") or "")
+        if target_id in self._pages:
+            try:
+                self._pages.pop(target_id).close()
+            except Exception:
+                pass
+        try:
+            self._http(f"/json/close/{target_id}")
+        except Exception:
+            pass
+        if self._active == target_id:
+            self._active = next(iter(self._pages), "")
+        return True
 
     # ---------- CDP ----------
 
@@ -238,12 +362,13 @@ class BrowserSession:
 
     # ---------- 动作 ----------
 
-    def open(self, url: str, show: bool | None = None) -> dict:
+    def open(self, url: str, show: bool | None = None, new_tab: bool = False) -> dict:
         if not url.startswith(("http://", "https://")):
             raise ValueError("只支持 http/https 地址")
+        if new_tab:
+            return self.new_tab(url)
         self.ensure(show=show)
-        self._call("Page.navigate", {"url": url})
-        self._wait_ready()
+        self._navigate(url)
         return self.info()
 
     def info(self) -> dict:
@@ -446,13 +571,70 @@ def _open(args: dict[str, Any], session: BrowserSession) -> str:
         return "[error] 只支持 http/https 地址"
     show = args.get("show")
     try:
-        info = session.open(url, show=True if show else (False if show is not None else None))
+        info = session.open(
+            url,
+            show=True if show else (False if show is not None else None),
+            new_tab=bool(args.get("new_tab")),
+        )
     except Exception as exc:
         return f"[error] 打开失败：{type(exc).__name__}: {exc}"
 
     title = str(info.get("title") or "").strip()
     head = str(info.get("text") or "").strip().replace("\n", " ")[:120]
     return f"[ok] 已打开 {info.get('url') or url}\n标题：{title}\n首屏：{head}"
+
+
+def _tabs(args: dict[str, Any], session: BrowserSession) -> str:
+    if not session.running:
+        return "[error] 浏览器还没打开，先调 browser_open"
+    tabs = session.list_tabs()
+    if not tabs:
+        return "[ok] 现在没有标签页"
+    lines = ["[ok] 当前标签页："]
+    for tab in tabs:
+        mark = "▶" if tab["active"] else " "
+        lines.append(f"  {mark}{tab['index']}. {tab['title'] or '(无标题)'} — {tab['url']}")
+    lines.append("用 browser_switch_tab(index) 切，browser_close_tab(index) 关。")
+    return "\n".join(lines)
+
+
+def _new_tab(args: dict[str, Any], session: BrowserSession) -> str:
+    url = str(args.get("url") or "").strip()
+    if not url.startswith(("http://", "https://")):
+        return "[error] 需要完整的 http(s) 地址"
+    try:
+        info = session.new_tab(url)
+    except Exception as exc:
+        return f"[error] 开标签页失败：{type(exc).__name__}: {exc}"
+    return f"[ok] 新标签页已打开（{len(session.list_tabs())} 个）：{info.get('title')} · {info.get('url')}"
+
+
+def _switch_tab(args: dict[str, Any], session: BrowserSession) -> str:
+    if not session.running:
+        return "[error] 浏览器还没打开，先调 browser_open"
+    try:
+        index = int(args.get("index"))
+    except (TypeError, ValueError):
+        return "[error] 缺少 index（从 1 开始）"
+    try:
+        info = session.switch_tab(index)
+    except Exception as exc:
+        return f"[error] 切换失败：{exc}"
+    return f"[ok] 切到第 {index} 页：{info.get('title')} · {info.get('url')}"
+
+
+def _close_tab(args: dict[str, Any], session: BrowserSession) -> str:
+    if not session.running:
+        return "[error] 浏览器还没打开，先调 browser_open"
+    index = args.get("index")
+    try:
+        done = session.close_tab(int(index) if index else None)
+    except Exception as exc:
+        return f"[error] 关标签页失败：{exc}"
+    if not done:
+        return "[ok] 没有标签页可关"
+    left = len(session.list_tabs())
+    return f"[ok] 已关闭，还剩 {left} 个标签页"
 
 
 def _read(args: dict[str, Any], session: BrowserSession) -> str:
@@ -580,11 +762,62 @@ def register_browser(registry: ToolRegistry, cfg=None) -> None:
                         "type": "boolean",
                         "description": "true = 显示浏览器窗口（需要人工介入时）",
                     },
+                    "new_tab": {
+                        "type": "boolean",
+                        "description": "true = 在新标签页打开（保留当前页面）。查多个来源时用它",
+                    },
                 },
                 "required": ["url"],
             },
             handler=lambda args: _open(args, session),
             risk="medium",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="browser_tabs",
+            description="列出所有标签页（序号、标题、网址、当前是哪个）。",
+            parameters={"type": "object", "properties": {}},
+            handler=lambda args: _tabs(args, session),
+            risk="low",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="browser_new_tab",
+            description="新开一个标签页并切过去。多来源查资料时，每个来源一页，别互相覆盖。",
+            parameters={
+                "type": "object",
+                "properties": {"url": {"type": "string", "description": "完整 http(s) 地址"}},
+                "required": ["url"],
+            },
+            handler=lambda args: _new_tab(args, session),
+            risk="medium",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="browser_switch_tab",
+            description="切换到第 N 个标签页（从 1 开始，先 browser_tabs 看序号）。",
+            parameters={
+                "type": "object",
+                "properties": {"index": {"type": "integer", "description": "标签页序号"}},
+                "required": ["index"],
+            },
+            handler=lambda args: _switch_tab(args, session),
+            risk="low",
+        )
+    )
+    registry.register(
+        ToolSpec(
+            name="browser_close_tab",
+            description="关掉一个标签页（不给 index 就关当前这个）。",
+            parameters={
+                "type": "object",
+                "properties": {"index": {"type": "integer", "description": "标签页序号"}},
+            },
+            handler=lambda args: _close_tab(args, session),
+            risk="low",
         )
     )
     registry.register(

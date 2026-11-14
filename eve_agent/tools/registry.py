@@ -104,7 +104,7 @@ class ToolRegistry:
             return f"[error] {type(exc).__name__}: {exc}"
 
 
-def build_default_registry(cfg=None) -> ToolRegistry:
+def build_default_registry(cfg=None, runtime=None) -> ToolRegistry:
     from .browser import register_browser
     from .builtin import register_builtin
     from .desktop import register_desktop
@@ -112,6 +112,8 @@ def build_default_registry(cfg=None) -> ToolRegistry:
     from .planning import register_planning
     from .project import register_project
     from .shell import register_shell
+    from .shared_tools import register_shared
+    from .vision_tools import register_vision
     from .web import register_web
     from .workspace import register_workspace
 
@@ -120,8 +122,10 @@ def build_default_registry(cfg=None) -> ToolRegistry:
     register_desktop(registry)
     register_planning(registry, cfg)
     register_project(registry, cfg)
+    register_shared(registry, cfg)
     register_web(registry, cfg)
     register_browser(registry, cfg)
+    register_vision(registry, cfg, runtime)
     register_workspace(registry, cfg)
     register_office(registry, cfg)
     register_shell(registry, cfg)

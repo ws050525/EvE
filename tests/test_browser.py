@@ -145,8 +145,61 @@ def browser_tools_are_registered():
         "browser_screenshot",
         "browser_back",
         "browser_close",
+        "browser_tabs",
+        "browser_new_tab",
+        "browser_switch_tab",
+        "browser_close_tab",
     }
     assert expected <= names, expected - names
+
+
+@case
+def tab_tools_use_the_session():
+    class TabSession(FakeSession):
+        def __init__(self):
+            super().__init__()
+            self.tabs = [
+                {"index": 1, "title": "A", "url": "https://a", "active": True},
+                {"index": 2, "title": "B", "url": "https://b", "active": False},
+            ]
+
+        def list_tabs(self):
+            return list(self.tabs)
+
+        def new_tab(self, url):
+            self.calls.append(("new_tab", url))
+            return {"url": url, "title": url, "text": ""}
+
+        def switch_tab(self, index):
+            self.calls.append(("switch", index))
+            return {"url": "https://b", "title": "B", "text": ""}
+
+        def close_tab(self, index=None):
+            self.calls.append(("close_tab", index))
+            return True
+
+    from eve_agent.tools.browser import _close_tab, _new_tab, _switch_tab, _tabs
+
+    session = TabSession()
+    listing = _tabs({}, session)
+    assert "A" in listing and "B" in listing and "▶" in listing, listing
+
+    assert _new_tab({"url": "https://c"}, session).startswith("[ok]")
+    assert ("new_tab", "https://c") in session.calls
+
+    assert _switch_tab({"index": 2}, session).startswith("[ok]")
+    assert ("switch", 2) in session.calls
+
+    assert _close_tab({"index": 1}, session).startswith("[ok]")
+    assert ("close_tab", 1) in session.calls
+
+
+@case
+def switch_tab_requires_index():
+    from eve_agent.tools.browser import _switch_tab
+
+    out = _switch_tab({}, FakeSession())
+    assert out.startswith("[error]"), out
 
 
 @case
