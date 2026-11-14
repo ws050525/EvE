@@ -1,4 +1,4 @@
-﻿# EVE 配置
+# EVE 配置
 # 模型是一等公民：[models.*] 声明有什么，[modes.*] 只声明用哪个。
 # 换本地模型 / 换云端厂商 = 改这里的几行，不动代码。
 
@@ -20,10 +20,10 @@ auto_confirm = false         # 最高权限：所有工具（含写文件、跑�
 # ---------- work 档的边界 ----------
 work_root = "."              # 文件工具和 shell_exec 的根目录，越界一律拒绝
 
-# ---------- 视觉（本地 Qwen3-VL 当"眼睛"）----------
-# 云端模型不收图，桌面操作又需要看。留空 = 自动挑第一个带 mmproj 的模型。
+# ---------- 视觉（本地视觉模型当"眼睛"）----------
+# 聊天和干活都走云端了，本地只留一个"能看屏幕"的模型。留空 = 自动挑第一个文件齐全的。
 [vision]
-model = ""                   # 例如 "qwen3vl-4b"
+model = "qwen3vl-8b"         # 没下载 8B 会自动退回 qwen3vl-4b
 
 # ---------- 浏览器真交互 ----------
 # 用本机已装的 Edge（走 CDP），不下载任何浏览器。
@@ -87,10 +87,33 @@ bin = "D:/1/Aico AI - 1.1/llama.cpp/llama-server.exe"
 threads = 8
 extra_args = ["--image-max-tokens", "256"]  # 视觉输入上限：Qwen3-VL 默认给很多 token，4B 上纯浪费时间
 
-# ---------- 本地模型 ----------
+# ---------- 本地模型（现在只剩"眼睛"这一个用途）----------
+#
+# 聊天和干活都走云端了，本地只需要一个能看屏幕的视觉模型。
+# 推荐 Qwen3-VL-8B：和原来的 4B 同一族（llama.cpp 的 mtmd 用法完全一样），
+# 但 8B 认界面、读小字、点控件都明显更准。
+#
+# 下载（任选一个源，放好路径就能用，不用改代码）：
+#   https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct-GGUF
+#   要两个文件：
+#     Qwen3VL-8B-Instruct-Q4_K_M.gguf          ≈ 5.0 GB
+#     mmproj-Qwen3VL-8B-Instruct-F16.gguf      ≈ 1.7 GB
+#   国内可以用镜像：https://hf-mirror.com/Qwen/Qwen3-VL-8B-Instruct-GGUF/resolve/main/<文件名>
+#
+# 放不下就把量化降到 Q3_K_M（≈3.9 GB）；想要更准就 Q5_K_M（≈5.7 GB，8G 显存要调小 ctx）。
+# 旧的 4B 留着当后备：没下载 8B 时会自动用它。
+
+[models.qwen3vl-8b]
+label = "Qwen3-VL 8B Q4_K_M（视觉）"
+kind = "local_gguf"
+engine = "llamacpp"
+path = "models/Qwen3-VL-8B-Instruct-GGUF/Qwen3VL-8B-Instruct-Q4_K_M.gguf"
+mmproj = "models/Qwen3-VL-8B-Instruct-GGUF/mmproj-Qwen3VL-8B-Instruct-F16.gguf"
+ctx = 8192
+ngl = 99
 
 [models.qwen3vl-4b]
-label = "Qwen3-VL 4B Q4_K_M"
+label = "Qwen3-VL 4B Q4_K_M（旧视觉，后备）"
 kind = "local_gguf"
 engine = "llamacpp"
 path = "models/Qwen3-VL-4B-Instruct-GGUF/Qwen/Qwen3-VL-4B-Instruct-GGUF/Qwen3VL-4B-Instruct-Q4_K_M.gguf"
@@ -140,11 +163,11 @@ price_cached_in = 0.9
 
 [modes.chat]
 label = "聊天"
-model = "qwen3vl-4b"
+model = "deepseek-flash"     # 聊天也走云端：本地那点算力省下来给视觉模型
 system_prompt = "prompts/chat.md"
 tools = []
 require_confirm = false
-max_tokens = 512
+max_tokens = 2048            # 陪聊也可能说长一点；512 容易被截断
 temperature = 0.7
 
 [modes.desktop]

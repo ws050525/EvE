@@ -1,4 +1,4 @@
-﻿"""让看不了图的模型也能"看屏幕"：用本地 Qwen3-VL 当眼睛。
+"""让看不了图的模型也能"看屏幕"：用本地 Qwen3-VL 当眼睛。
 
 背景：干活的档位现在跑云端模型（DeepSeek Flash），它不收图片；而桌面操作
 （"点搜索框""这一页的下拉在哪"）本质上需要看。本地那个 Qwen3-VL 有视觉，
@@ -179,11 +179,38 @@ def capture(
     )
 
 
+def _model_ready(model, cfg) -> bool:
+    """权重和视觉投影都在磁盘上才算能用。"""
+    weights = getattr(model, "path", "")
+    mmproj = getattr(model, "mmproj", "")
+    if not weights or not mmproj:
+        return False
+    try:
+        root = Path(getattr(cfg, "root", "."))
+        for item in (weights, mmproj):
+            path = Path(item)
+            if not path.is_absolute():
+                path = root / path
+            if not path.exists():
+                return False
+    except Exception:
+        return False
+    return True
+
+
 def pick_vision_model(cfg, preferred: str = "") -> str:
-    """挑一个带视觉投影的模型；没有就返回空串。"""
+    """挑一个能用的视觉模型：优先指定的，其次第一个文件齐全的。
+
+    没下载完的模型会被跳过——所以可以"配置里先写好新模型、下好了自动生效、
+    没下好还能用旧的"，不用来回改配置。
+    """
     models = getattr(cfg, "models", None) or {}
-    if preferred and preferred in models:
+    if preferred and preferred in models and _model_ready(models[preferred], cfg):
         return preferred
+    for model_id, model in models.items():
+        if getattr(model, "mmproj", "") and _model_ready(model, cfg):
+            return model_id
+    # 一个都跑不了：把配了视觉的那个名字报回去，让报错信息具体一点
     for model_id, model in models.items():
         if getattr(model, "mmproj", ""):
             return model_id

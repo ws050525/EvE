@@ -28,15 +28,52 @@ def case(fn):
 
 @case
 def picks_a_model_that_has_a_vision_encoder():
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "w.gguf").write_bytes(b"x")
+        (root / "m.gguf").write_bytes(b"x")
+        cfg = SimpleNamespace(
+            root=root,
+            models={
+                "cloud": SimpleNamespace(mmproj="", path="", engine=""),
+                "local-plain": SimpleNamespace(mmproj="", path="w.gguf", engine=""),
+                "qwen3vl-4b": SimpleNamespace(mmproj="m.gguf", path="w.gguf", engine=""),
+            },
+        )
+        assert vision.pick_vision_model(cfg) == "qwen3vl-4b"
+        assert vision.pick_vision_model(cfg, "cloud") == "qwen3vl-4b"
+
+
+@case
+def a_model_that_is_not_downloaded_is_skipped():
+    """配置先写好新模型、还没下载时，应该自动退回旧的能用的那个。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        (root / "old.gguf").write_bytes(b"x")
+        (root / "old-mmproj.gguf").write_bytes(b"x")
+        cfg = SimpleNamespace(
+            root=root,
+            models={
+                "qwen3vl-8b": SimpleNamespace(
+                    mmproj="models/8b-mmproj.gguf", path="models/8b.gguf", engine=""
+                ),
+                "qwen3vl-4b": SimpleNamespace(
+                    mmproj="old-mmproj.gguf", path="old.gguf", engine=""
+                ),
+            },
+        )
+        # 指定了没下载的 8B，也不能硬用
+        assert vision.pick_vision_model(cfg, "qwen3vl-8b") == "qwen3vl-4b"
+
+
+@case
+def nothing_downloaded_still_reports_a_vision_model_name():
+    """一个都没下载时，把配了视觉的名字报回去，报错信息才具体。"""
     cfg = SimpleNamespace(
-        models={
-            "cloud": SimpleNamespace(mmproj=""),
-            "local-plain": SimpleNamespace(mmproj=""),
-            "qwen3vl-4b": SimpleNamespace(mmproj="models/mmproj.gguf"),
-        }
+        root=Path("."),
+        models={"only": SimpleNamespace(mmproj="missing.gguf", path="missing.gguf", engine="")},
     )
-    assert vision.pick_vision_model(cfg) == "qwen3vl-4b"
-    assert vision.pick_vision_model(cfg, "cloud") == "cloud"
+    assert vision.pick_vision_model(cfg) == "only"
 
 
 @case

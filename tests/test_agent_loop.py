@@ -228,7 +228,10 @@ def cloud_cost_matches_config_price():
 
 @case
 def local_model_is_free():
-    agent = _agent("chat")  # 聊天档跑本地模型 → 不计费
+    """本地模型不计费。现在没有档位默认用本地了，手动指一个来验价格这条链。"""
+    agent = _agent("chat")
+    agent._model_override = "qwen3vl-4b"
+    agent._provider_model_id = "qwen3vl-4b"  # 别让它去真拉本地引擎
     agent.send("你好")
     assert agent.usage.totals().calls == 1
     assert agent.usage.session_cost == 0.0, agent.usage.session_cost
@@ -245,10 +248,15 @@ def usage_survives_mode_switch():
 
 @case
 def context_budget_defaults_to_auto():
-    agent = _agent("chat")  # 本地 8192，留 512 输出和 512 余量
+    """自动预算 = 模型窗口减掉输出和余量，再封顶 24k。"""
+    from eve_agent.loop import AUTO_BUDGET_CAP
+
+    agent = _agent("chat")
     budget = agent.context_policy.max_prompt_tokens
+    model = agent.cfg.model(agent.model_id)
+    expected = min(AUTO_BUDGET_CAP, model.ctx - agent.mode.max_tokens - 512)
     assert agent.context_setting == 0, agent.context_setting
-    assert 6000 <= budget <= 8000, budget
+    assert budget == expected, (budget, expected)
 
 
 @case
@@ -279,11 +287,13 @@ def runtime_budget_override_wins_and_resets():
 
 @case
 def budget_never_exceeds_model_window():
+    """不管设多大，生效预算都不能超过模型窗口减输出。"""
     agent = _agent("chat")
-    agent.set_context_limit(24000)  # 远超本地 8192 窗口
+    model = agent.cfg.model(agent.model_id)
+    agent.set_context_limit(24000)
     limit = agent.context_policy.max_prompt_tokens
-    assert limit < 8192, limit
-    assert limit == 8192 - agent.mode.max_tokens - 128, limit
+    ceiling = model.ctx - agent.mode.max_tokens - 128
+    assert limit <= ceiling, (limit, ceiling)
 
 
 @case

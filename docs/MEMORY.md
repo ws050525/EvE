@@ -1,4 +1,4 @@
-﻿# EVE 记忆报告（截至 v0.9.1）
+﻿# EVE 记忆报告（截至 v0.10.0）
 
 > 给下一个对话用：读完这份就能接手，不用翻聊天记录。
 > 这份是**对话总结**，不是交接清单；上一版留下的 `docs/HANDOFF.md` 已删（内容并进这份）。
@@ -10,7 +10,7 @@
 一个本地优先的个人 agent：**本地模型陪聊 + 操作电脑，云端模型干重活**。
 
 - 仓库：https://github.com/ws050525/EvE （分支 `main`）
-- 当前版本：`0.9.1`（`eve_core/version.py`），最新标签 `v0.9.1`
+- 当前版本：`0.10.0`（`eve_core/version.py`），最新标签 `v0.10.0`
 - 工作目录：`D:\1\EVE`
 
 ## 2. 环境（容易踩的坑）
@@ -56,14 +56,14 @@ eve_ui/     界面
   app.py 入口与开发期开关；main_window 主窗；chat_view 气泡；mobius 莫比乌斯；orb 悬浮球
   bridge.py agent 跑在 QThread；voice.py 语音线程；tts.py 播报线程；theme.py 配色
 eve_cli.py  eve_gui.py  eve_tts.py（播调试听工具）  tools/（模型下载、播报预览）
-tests/      14 个文件 / 212 项，全部不需要模型
+tests/      14 个文件 / 214 项，全部不需要模型
 ```
 
 ## 4. 三个档位
 
 | id | 显示名 | 模型 | 工具 | 行为 |
 | --- | --- | --- | --- | --- |
-| `chat` | 聊天 | 本地 GGUF | 无 | 纯聊天，不收成悬浮球，步数 12 |
+| `chat` | 聊天 | DeepSeek Flash（云端） | 无 | 纯聊天，不收成悬浮球，步数 12 |
 | `desktop` | 桌面 | DeepSeek Flash（云端） | 12 个桌面/联网/计划工具 | 收成悬浮球，步数 20 |
 | `work` | 工作 | DeepSeek Flash | 29 个（计划/多文件/浏览器/视觉/共享） | 收成悬浮球，步数 32 |
 
@@ -88,6 +88,7 @@ tests/      14 个文件 / 212 项，全部不需要模型
   见第 12 节；顺手清掉 537MB 没用的音色和 `.tmp/`。
 - **0.6.10**：声音不再发硬——后处理从"提亮优先"改成"柔和优先"，语速 1.12→1.05，
   句间留 70ms 换气，见 12.6 节。
+- **0.10.0**：聊天也走云端，本地只留视觉；视觉模型推荐换 Qwen3-VL-8B，见第 17 节。
 - **0.9.1**：视觉默认只截活动窗口 + 限 image tokens，单次 15s→6–9s，见 16.6。
 - **0.9.0**：跨任务共享笔记、浏览器多标签页、本地视觉当"眼睛"（screen_read / screen_locate），见第 16 节。
 - **0.8.0**：浏览器真交互（Edge CDP，零下载）、多任务并行（最多 3 个）、断点列表，见第 15 节。
@@ -178,7 +179,7 @@ tests/      14 个文件 / 212 项，全部不需要模型
 & 'D:\python\python.exe' tests\test_voice.py # 单个测试
 ```
 
-测试共 14 个文件 / 212 项：persona / context / workspace / cost / apps / office / voice /
+测试共 14 个文件 / 214 项：persona / context / workspace / cost / apps / office / voice /
 agent_loop / planning / checkpoint / project（语音 50 项；计划 11 项；断点 7 项；多文件 8 项）。
 
 下载语音模型（SenseVoice + silero VAD）：
@@ -191,7 +192,7 @@ agent_loop / planning / checkpoint / project（语音 50 项；计划 11 项；�
 ## 11. 给下一个对话的开场建议
 
 > 读 `docs/MEMORY.md`。语音（第 12 节）和 agent 能力（第 13 节）两个节点都已完成，
-> 测试 212/212，代码在本地和 GitHub 上都是最新。
+> 测试 214/214，代码在本地和 GitHub 上都是最新。
 > 剩下的主要是**真人验收**：喊「伊芙」听播报、开完全权限跑一个真实复杂任务、
 > 看长任务中途按停止会不会干净退出。
 > 然后是打包（PyInstaller one-folder，模型外置）。
@@ -549,3 +550,49 @@ Edge 自带一堆扩展后台页，不过滤的话序号全乱。
 
 另外修了两个小问题：截图文件名只到秒，同一秒截两张会互相覆盖（加随机后缀）；
 `[vision] model` 留空时自动挑第一个带 mmproj 的模型。
+
+## 17. 全云端 + 换视觉模型（v0.10.0）
+
+用户决定：本地 Qwen 不做聊天了，聊天和 agent 都走云端，本地只留一个"眼睛"。
+
+### 17.1 改了什么
+
+| 项 | 之前 | 现在 |
+| --- | --- | --- |
+| `chat` 档 | 本地 qwen3vl-4b | **deepseek-flash**（云端） |
+| `desktop` / `work` | deepseek-flash | 不变 |
+| 本地模型用途 | 聊天 + 视觉 | **只有视觉** |
+| `[vision] model` | 空（自动挑） | `qwen3vl-8b`（没下载会自动退回 4b） |
+
+聊天改云端后有两件事要注意：
+1. **陪聊开始花钱**了（¥2/M 入、¥8/M 出，命中缓存 10%）。一轮闲聊约 ¥0.001–0.002。
+2. 本地 4B 的 GGUF（2.4GB）现在只当视觉模型用；想省磁盘可以只在需要视觉时用 8B。
+
+### 17.2 推荐的视觉模型
+
+**Qwen3-VL-8B-Instruct**（Q4_K_M）——和原来的 4B 同一族，llama.cpp 的 mtmd 用法完全一样，
+换过去不用改代码，只是更准（认界面、读小字、找控件）。
+
+| 文件 | 大小 | 放哪 |
+| --- | --- | --- |
+| `Qwen3VL-8B-Instruct-Q4_K_M.gguf` | ≈5.0 GB | `models/Qwen3-VL-8B-Instruct-GGUF/` |
+| `mmproj-Qwen3VL-8B-Instruct-F16.gguf` | ≈1.7 GB | 同上 |
+
+来源：<https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct-GGUF>，国内镜像 `hf-mirror.com`。
+
+显存账：8GB 卡上 5.0 + 1.7 ≈ 6.7GB，ctx 8192 还够；紧张就换 `Q3_K_M`（≈3.9GB）。
+CPU 也可以跑（`ngl` 调小），只是慢。
+
+### 17.3 配置怎么写好的
+
+- `[models.qwen3vl-8b]` 已经写好（path/mmproj 指向上面两个文件）。
+- `[vision] model = "qwen3vl-8b"`。
+- `pick_vision_model()` 会**检查文件存在**：8B 没下载就自动用 4B；
+  下好了重启程序就自动生效，不用改配置。
+- 旧的 `qwen3vl-4b` 保留当后备，`qwen3vl-4b-small` 用来测 4k 上下文。
+
+### 17.4 测试
+
+`local_model_is_free` / `context_budget_defaults_to_auto` / `budget_never_exceeds_model_window`
+这三条原来写死了"chat 用本地 8k"，chat 换云端后全挂。改成从配置算，不再写死数字。
+新增"没下载的视觉模型会被跳过"两条用例。14 文件 / 214 项全绿。
