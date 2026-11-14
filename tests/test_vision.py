@@ -77,6 +77,73 @@ def nothing_downloaded_still_reports_a_vision_model_name():
 
 
 @case
+def gui_models_are_detected_and_parsed():
+    """UI-TARS / Holo 这类 GUI 模型用的是"动作 + 0–1000 归一化坐标"，不是 JSON。"""
+    cfg = SimpleNamespace(
+        models={
+            "ui-tars-1.5-7b": SimpleNamespace(path="models/UI-TARS-1.5-7B-Q4_K_M.gguf"),
+            "qwen3vl-8b": SimpleNamespace(path="models/qwen3vl-8b.gguf"),
+        }
+    )
+    assert vision.model_format(cfg, "ui-tars-1.5-7b") == "uitars"
+    assert vision.model_format(cfg, "qwen3vl-8b") == "general"
+    assert vision.model_format(cfg, "qwen3vl-8b", "uitars") == "uitars"
+
+    # 归一化 (500,500) 在 800x600 的图上 → 图上 (400,300)，加原点 (100,50)
+    hit = vision._parse_uitars(
+        "Action: click(start_box='<|box_start|>(500,500)<|box_end|>')",
+        0.5,
+        (800, 600),
+        (100, 50),
+    )
+    assert (hit["x"], hit["y"]) == (500, 350), hit
+
+    # 有的转换版直接给像素：>1000 才当像素（≤1000 一律按归一化，这是 UI-TARS 的约定）
+    px = vision._parse_uitars("Action: click(start_box='(1200,900)')", 0.5, (800, 600), (0, 0))
+    assert (px["x"], px["y"]) == (2400, 1800), px
+
+    fail = vision._parse_uitars("Action: fail", 1.0, (800, 600), (0, 0))
+    assert fail["found"] is False
+
+
+@case
+def locate_uses_the_gui_format_for_gui_models():
+    from PIL import Image
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "shot.png"
+        Image.new("RGB", (800, 600), "black").save(path)
+
+        class FakeProvider:
+            def chat(self, messages, tools=None, **kwargs):
+                # 记下提示词，确认走的是 uitars 那套
+                self.prompt = messages[-1]["content"][0]["text"]
+                return SimpleNamespace(
+                    content="Action: click(start_box='<|box_start|>(500,500)<|box_end|>')"
+                )
+
+        class FakeRuntime:
+            def provider_for(self, model_id):
+                return FakeProvider()
+
+        provider = FakeProvider()
+        runtime = FakeRuntime()
+        runtime.provider_for = lambda model_id: provider  # type: ignore[assignment]
+
+        cfg = SimpleNamespace(
+            models={"ui-tars": SimpleNamespace(mmproj="m.gguf", path="ui-tars.gguf")},
+            vision_model="ui-tars",
+            vision_format="auto",
+        )
+        shot = vision.Shot(path=path, origin=(0, 0), size=(800, 600), window="窗口")
+        hit = vision.locate(runtime, cfg, shot, "搜索框")
+
+        assert "Action: click" in provider.prompt, provider.prompt[:80]
+        # 800x600 没缩放，归一化 → (400,300)
+        assert (hit["x"], hit["y"]) == (400, 300), hit
+
+
+@case
 def returns_empty_when_nothing_can_see():
     cfg = SimpleNamespace(models={"a": SimpleNamespace(mmproj="")})
     assert vision.pick_vision_model(cfg) == ""

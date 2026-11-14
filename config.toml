@@ -24,6 +24,9 @@ work_root = "."              # 文件工具和 shell_exec 的根目录，越界�
 # 聊天和干活都走云端了，本地只留一个"能看屏幕"的模型。留空 = 自动挑第一个文件齐全的。
 [vision]
 model = "qwen3vl-8b"         # 没下载 8B 会自动退回 qwen3vl-4b
+# 坐标格式：auto = 按模型名猜；general = JSON 像素；uitars = 动作 + 0–1000 归一化
+# 换 UI-TARS / Holo 这类 GUI 专用模型时留 auto（名字能认出来），或者写死 uitars
+format = "auto"
 
 # ---------- 浏览器真交互 ----------
 # 用本机已装的 Edge（走 CDP），不下载任何浏览器。

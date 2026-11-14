@@ -1,4 +1,4 @@
-"""让看不了图的模型也能"看屏幕"：用本地 Qwen3-VL 当眼睛。
+﻿"""让看不了图的模型也能"看屏幕"：用本地 Qwen3-VL 当眼睛。
 
 背景：干活的档位现在跑云端模型（DeepSeek Flash），它不收图片；而桌面操作
 （"点搜索框""这一页的下拉在哪"）本质上需要看。本地那个 Qwen3-VL 有视觉，
@@ -17,6 +17,7 @@ from __future__ import annotations
 import base64
 import ctypes
 import io
+import re
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -240,11 +241,8 @@ def _fit(image, max_side: int = MAX_SIDE, max_pixels: int = MAX_PIXELS):
     return image.resize((max(1, int(image.width * scale)), max(1, int(image.height * scale)))), scale
 
 
-def _prepare(path: Path, max_side: int = MAX_SIDE) -> tuple[str, float]:
-    """把图缩到上限内并编码，返回 (data_url, 缩放比例)。
-
-    缩放比例是给坐标定位用的：模型说的是"图上的像素"，除以比例才是截图坐标。
-    """
+def _prepare(path: Path, max_side: int = MAX_SIDE) -> tuple[str, float, tuple[int, int]]:
+    """把图缩到上限内并编码，返回 (data_url, 缩放比例, 送出去的图尺寸)。"""
     from PIL import Image
 
     image = Image.open(path).convert("RGB")
@@ -252,7 +250,7 @@ def _prepare(path: Path, max_side: int = MAX_SIDE) -> tuple[str, float]:
     buffer = io.BytesIO()
     image.save(buffer, format="JPEG", quality=88)
     encoded = base64.b64encode(buffer.getvalue()).decode("ascii")
-    return "data:image/jpeg;base64," + encoded, scale
+    return "data:image/jpeg;base64," + encoded, scale, (image.width, image.height)
 
 
 def ask(
@@ -269,7 +267,7 @@ def ask(
         raise RuntimeError("没有可用的视觉模型（[models.*] 里要有 mmproj 的 GGUF）")
 
     provider = runtime.provider_for(model_id)
-    image_url, _scale = _prepare(Path(image_path))
+    image_url, _scale, _size = _prepare(Path(image_path))
     messages = [
         {
             "role": "system",
@@ -301,11 +299,38 @@ LOCATE_PROMPT = """在这张屏幕截图里找：{target}
 - 不确定也要给"最像的"那个，不要编造不存在的元素。"""
 
 
-def locate(runtime, cfg, shot, target: str, model_id: str = "") -> dict:
+# UI-TARS / Holo 这类"GUI 专用"模型不吃"回个 JSON"那套，它们按自己的动作格式输出，
+# 坐标是 0–1000 的归一化值。所以提示词和解析要分两套。
+UITARS_PROMPT = """Target: {target}
+
+你是 GUI agent。请给出点击这个目标的操作，只输出一行：
+Action: click(start_box='<|box_start|>(x,y)<|box_end|>')
+
+x、y 用 0–1000 的归一化坐标（左上角 0,0，右下角 1000,1000），取目标中心点。
+找不到就只输出：Action: fail"""
+
+_UI_TARS_COORD = re.compile(r"\(\s*(\d+(?:\.\d+)?)\s*,\s*(\d+(?:\.\d+)?)\s*\)")
+
+
+def model_format(cfg, model_id: str = "", override: str = "") -> str:
+    """判断该用哪套坐标格式：general（JSON 像素）还是 uitars（动作 + 归一化）。"""
+    if override in ("general", "uitars"):
+        return override
+    models = getattr(cfg, "models", None) or {}
+    model = models.get(model_id)
+    text = (model_id + " " + str(getattr(model, "path", "") if model else "")).lower()
+    if any(key in text for key in ("ui-tars", "uitars", "holo")):
+        return "uitars"
+    return "general"
+
+
+def locate(
+    runtime, cfg, shot, target: str, model_id: str = "", fmt: str = ""
+) -> dict:
     """问"某个东西在屏幕哪个坐标"，返回 {found, x, y, what}。
 
     `shot` 可以是 Shot（裁活动窗口时带 origin），也可以是纯路径（按全屏算）。
-    坐标最后换算成**真实屏幕坐标**：先除以缩放比例，再加上裁剪原点。
+    坐标最后换算成**真实屏幕坐标**：还原缩放、按需重建归一化坐标、再加裁剪原点。
     """
     if isinstance(shot, Shot):
         image_path, origin = shot.path, shot.origin
@@ -316,23 +341,41 @@ def locate(runtime, cfg, shot, target: str, model_id: str = "") -> dict:
     if not model_id:
         raise RuntimeError("没有可用的视觉模型（[models.*] 里要有 mmproj 的 GGUF）")
 
+    fmt = model_format(cfg, model_id, fmt or getattr(cfg, "vision_format", ""))
     provider = runtime.provider_for(model_id)
-    image_url, scale = _prepare(Path(image_path))
-    messages = [
-        {
-            "role": "system",
-            "content": "你是屏幕定位器。只输出 JSON。坐标必须是图上真实可见元素的像素位置。",
-        },
-        {
-            "role": "user",
-            "content": [
-                {"type": "text", "text": LOCATE_PROMPT.format(target=target)},
-                {"type": "image_url", "image_url": {"url": image_url}},
-            ],
-        },
-    ]
-    result = provider.chat(messages, None, max_tokens=200, temperature=0.0)
+    image_url, scale, (sent_w, sent_h) = _prepare(Path(image_path))
+    original_w = sent_w / scale if scale else sent_w
+    original_h = sent_h / scale if scale else sent_h
+
+    if fmt == "uitars":
+        system = "你是 GUI agent。严格按要求的动作格式输出，不要解释。"
+        question = UITARS_PROMPT.format(target=target)
+        max_tokens = 120
+    else:
+        system = "你是屏幕定位器。只输出 JSON。坐标必须是图上真实可见元素的像素位置。"
+        question = LOCATE_PROMPT.format(target=target)
+        max_tokens = 200
+
+    result = provider.chat(
+        [
+            {"role": "system", "content": system},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": question},
+                    {"type": "image_url", "image_url": {"url": image_url}},
+                ],
+            },
+        ],
+        None,
+        max_tokens=max_tokens,
+        temperature=0.0,
+    )
     text = (result.content or "").strip()
+
+    if fmt == "uitars":
+        return _parse_uitars(text, scale, (original_w, original_h), origin)
+
     data = _extract_json(text)
     if not data:
         return {"found": False, "x": 0, "y": 0, "what": f"看不懂模型的回答：{text[:80]}", "raw": text}
@@ -355,6 +398,42 @@ def locate(runtime, cfg, shot, target: str, model_id: str = "") -> dict:
         "x": int(round(x)),
         "y": int(round(y)),
         "what": str(data.get("what") or ""),
+        "raw": text,
+    }
+
+
+def _parse_uitars(
+    text: str, scale: float, size: tuple[float, float], origin: tuple[int, int]
+) -> dict:
+    """解析 UI-TARS 的 `Action: click(start_box='<|box_start|>(x,y)<|box_end|>')`。
+
+    坐标有两种写法：0–1000 归一化（UI-TARS 的习惯）或者直接给像素（有些转换版）。
+    大于 1000 的按像素处理，否则按归一化算。
+    """
+    if "fail" in text.lower() and not _UI_TARS_COORD.search(text):
+        return {"found": False, "x": 0, "y": 0, "what": "模型说找不到", "raw": text}
+
+    match = _UI_TARS_COORD.search(text)
+    if not match:
+        return {"found": False, "x": 0, "y": 0, "what": f"看不懂的动作：{text[:80]}", "raw": text}
+
+    x = float(match.group(1))
+    y = float(match.group(2))
+    width, height = size
+    if x <= 1000 and y <= 1000:
+        # 归一化坐标 → 原始图像像素
+        px = x / 1000.0 * width
+        py = y / 1000.0 * height
+    else:
+        # 已经是"送出去的图"的像素
+        px = x / scale if scale else x
+        py = y / scale if scale else y
+
+    return {
+        "found": True,
+        "x": int(round(px + origin[0])),
+        "y": int(round(py + origin[1])),
+        "what": "gui-model",
         "raw": text,
     }
 

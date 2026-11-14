@@ -78,6 +78,29 @@
 
 显存不够就把量化降到 `Q3_K_M`（≈3.9 GB），文件路径对应改一下就行。
 
+### 想要"一步到位"：换 GUI 专用模型
+
+通用视觉模型（Qwen3-VL 这类）能描述界面、能粗定位，但**点小按钮的精度不够**。
+真正为 GUI 训练的是另一类模型，在 ScreenSpot 这类"给截图找控件"的基准上高 15–20 个百分点：
+
+| 模型 | 说明 |
+| --- | --- |
+| **UI-TARS-1.5-7B** | 字节做的 GUI agent 模型，专门练"看截图 → 点哪里"，7B 里精度最高 |
+| **Holo1.5-7B** | H Company 的 computer-use 模型，同样有 GGUF |
+
+两者都有社区 GGUF 转换（比如 `Mungert/UI-TARS-1.5-7B-GGUF`）。
+它们不吃"回个 JSON"那套提示词，而是输出 `Action: click(start_box=...)`、
+坐标用 0–1000 归一化——**这套格式代码已经支持了**：
+
+```toml
+[vision]
+model = "ui-tars-1.5-7b"
+format = "auto"   # 按模型名自动认出 uitars 格式；也可写死 uitars
+```
+
+换模型时只要在 `[models.*]` 里加一条（path + mmproj），把 `[vision] model` 指过去。
+`format = "auto"` 会在模型名/路径里看到 `ui-tars` 或 `holo` 时自动切到 GUI 那套解析。
+
 ## 浏览器真交互
 
 读静态页面用 `http_get`（快、便宜）；需要登录、点按钮、翻页、填表时，agent 会调浏览器工具：

@@ -137,6 +137,8 @@ class AppConfig:
     # 视觉：桌面操作要"看"，但云端模型不收图，所以用本地 Qwen3-VL 当眼睛。
     # 留空 = 自动挑第一个带 mmproj 的模型。
     vision_model: str = ""
+    # 视觉模型的坐标格式：auto（按模型名猜）/ general（JSON 像素）/ uitars（动作 + 0–1000 归一化）
+    vision_format: str = "auto"
     voice: "VoiceSettings" = field(default_factory=lambda: _default_voice())
 
     def model(self, model_id: str) -> ModelConfig:
@@ -420,6 +422,7 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
         browser_binary=str(resolve(browser["binary"])) if browser.get("binary") else "",
         browser_profile=str(resolve(browser["profile"])) if browser.get("profile") else "",
         vision_model=str(vision_cfg.get("model") or ""),
+        vision_format=str(vision_cfg.get("format") or "auto"),
         voice=voice,
     )
     return _apply_prefs(cfg)
