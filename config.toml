@@ -1,4 +1,4 @@
-# EVE 配置
+﻿# EVE 配置
 # 模型是一等公民：[models.*] 声明有什么，[modes.*] 只声明用哪个。
 # 换本地模型 / 换云端厂商 = 改这里的几行，不动代码。
 
@@ -113,10 +113,10 @@ extra_args = ["--image-max-tokens", "256"]  # 视觉输入上限：Qwen3-VL 默�
 label = "UI-TARS 1.5 7B Q4_K_M（GUI 定位）"
 kind = "local_gguf"
 engine = "llamacpp"
-path = "models/UI-TARS-1.5-7B-GGUF/ByteDance-Seed_UI-TARS-1.5-7B-Q4_K_M.gguf"
-mmproj = "models/UI-TARS-1.5-7B-GGUF/mmproj-ByteDance-Seed_UI-TARS-1.5-7B.gguf"
-weights_mb = 4466           # 完整性检查：没到这个大小就当还没下好，自动退回上一个模型
-mmproj_mb = 1293
+path = "models/UI-TARS-1.5-7B-GGUF/UI-TARS-1.5-7B-q4_k_m.gguf"
+mmproj = "models/UI-TARS-1.5-7B-GGUF/UI-TARS-1.5-7B-f16.mmproj"
+weights_mb = 4556           # 完整性检查：没到这个大小就当还没下好，自动退回上一个模型
+mmproj_mb = 1291
 ctx = 8192
 ngl = 99
 
