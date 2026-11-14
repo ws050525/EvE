@@ -105,6 +105,7 @@ class ToolRegistry:
 
 
 def build_default_registry(cfg=None) -> ToolRegistry:
+    from .browser import register_browser
     from .builtin import register_builtin
     from .desktop import register_desktop
     from .office import register_office
@@ -120,6 +121,7 @@ def build_default_registry(cfg=None) -> ToolRegistry:
     register_planning(registry, cfg)
     register_project(registry, cfg)
     register_web(registry, cfg)
+    register_browser(registry, cfg)
     register_workspace(registry, cfg)
     register_office(registry, cfg)
     register_shell(registry, cfg)

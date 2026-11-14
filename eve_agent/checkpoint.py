@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -154,7 +155,8 @@ def build(
     now = datetime.now().isoformat(timespec="seconds")
     kept = [_trim(m) for m in messages if m.get("role") != "system"][-MAX_MESSAGES:]
     return TaskCheckpoint(
-        id=(previous.id if previous and previous.id else f"task-{datetime.now():%Y%m%d-%H%M%S}"),
+        # 同一秒里可能起好几个任务，纯时间戳会撞车，加一小段随机后缀
+        id=(previous.id if previous and previous.id else f"task-{datetime.now():%Y%m%d-%H%M%S}-{uuid.uuid4().hex[:4]}"),
         created=(previous.created if previous and previous.created else now),
         updated=now,
         mode=mode,
@@ -172,13 +174,19 @@ def build(
 # ---------- 落盘 ----------
 
 
-def _path(data_dir: Path) -> Path:
-    return Path(data_dir) / TASKS_DIR / LATEST
+def _path(data_dir: Path, task_id: str | None = None) -> Path:
+    folder = Path(data_dir) / TASKS_DIR
+    if task_id:
+        safe = "".join(ch for ch in task_id if ch.isalnum() or ch in "-_") or "task"
+        return folder / f"{safe}.json"
+    return folder / LATEST
 
 
 def save(checkpoint: TaskCheckpoint, data_dir: Path) -> Path:
-    path = _path(data_dir)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    """两处都写：`tasks/<id>.json` 是这条任务自己的存档，`latest.json` 是最新的那份。
+
+    多份存档是为了"断点列表"——同时跑的几个任务各停各的，互不覆盖。
+    """
     payload = {
         "version": 1,
         "id": checkpoint.id,
@@ -194,20 +202,19 @@ def save(checkpoint: TaskCheckpoint, data_dir: Path) -> Path:
         "files": checkpoint.files,
         "messages": checkpoint.messages,
     }
-    path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    return path
+    text = json.dumps(payload, ensure_ascii=False)
+
+    folder = Path(data_dir) / TASKS_DIR
+    folder.mkdir(parents=True, exist_ok=True)
+    per_task = _path(data_dir, checkpoint.id)
+    per_task.write_text(text, encoding="utf-8")
+
+    latest = _path(data_dir)
+    latest.write_text(text, encoding="utf-8")
+    return per_task
 
 
-def load(data_dir: Path) -> TaskCheckpoint | None:
-    path = _path(data_dir)
-    if not path.exists():
-        return None
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    if not isinstance(raw, dict):
-        return None
+def _from_raw(raw: dict) -> TaskCheckpoint:
     return TaskCheckpoint(
         id=str(raw.get("id") or ""),
         created=str(raw.get("created") or ""),
@@ -224,9 +231,58 @@ def load(data_dir: Path) -> TaskCheckpoint | None:
     )
 
 
-def clear(data_dir: Path) -> None:
-    path = _path(data_dir)
+def load(data_dir: Path, task_id: str | None = None) -> TaskCheckpoint | None:
+    """不给 id 就取最新那份；给了 id 就取那条任务自己的存档。"""
+    path = _path(data_dir, task_id)
+    if not path.exists():
+        return None
     try:
-        path.unlink(missing_ok=True)
-    except OSError:
-        pass
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(raw, dict):
+        return None
+    return _from_raw(raw)
+
+
+def list_all(data_dir: Path, limit: int = 20) -> list[TaskCheckpoint]:
+    """所有存下来的断点，最近改过的在前。用来在界面里列出来挑一个继续。"""
+    folder = Path(data_dir) / TASKS_DIR
+    if not folder.is_dir():
+        return []
+    found: list[TaskCheckpoint] = []
+    for path in folder.glob("*.json"):
+        if path.name == LATEST:
+            continue
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if isinstance(raw, dict):
+            found.append(_from_raw(raw))
+    found.sort(key=lambda item: item.updated or "", reverse=True)
+    return found[:limit]
+
+
+def clear(data_dir: Path, task_id: str | None = None) -> None:
+    """清掉最新指针；给了 id 就只删那一条，不给就把所有存档都删掉。"""
+    for path in [_path(data_dir)]:
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    folder = Path(data_dir) / TASKS_DIR
+    if task_id:
+        try:
+            _path(data_dir, task_id).unlink(missing_ok=True)
+        except OSError:
+            pass
+        return
+    if not folder.is_dir():
+        return
+    for path in folder.glob("*.json"):
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass

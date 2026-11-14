@@ -129,6 +129,11 @@ class AppConfig:
     tool_output_chars: int = 6000  # 单个工具结果最多入库多少字符
     max_steps: int = 12  # 单条消息最多走几步（工具调用来回算一步）
     auto_confirm: bool = False  # 最高权限：所有工具（含高风险）都不再询问
+    # ---------- 浏览器真交互 ----------
+    browser_headless: bool = True  # 默认无头；要人工登录就设 false
+    browser_port: int = 9333
+    browser_binary: str = ""  # 留空自动找 Edge/Chrome
+    browser_profile: str = ""  # 留空用 <work_root>/.tmp/browser-profile
     voice: "VoiceSettings" = field(default_factory=lambda: _default_voice())
 
     def model(self, model_id: str) -> ModelConfig:
@@ -326,6 +331,7 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
     if default_mode not in modes:
         raise ConfigError(f"default_mode '{default_mode}' 不在档位列表里")
 
+    browser = data.get("browser", {})
     voice_raw = data.get("voice", {})
     fallbacks_raw = voice_raw.get("asr_fallbacks")
     if fallbacks_raw is None:
@@ -405,6 +411,10 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
         tool_output_chars=int(app.get("tool_output_chars", 6000)),
         max_steps=max(1, int(app.get("max_steps", 12))),
         auto_confirm=bool(app.get("auto_confirm", False)),
+        browser_headless=bool(browser.get("headless", True)),
+        browser_port=int(browser.get("port", 9333)),
+        browser_binary=str(resolve(browser["binary"])) if browser.get("binary") else "",
+        browser_profile=str(resolve(browser["profile"])) if browser.get("profile") else "",
         voice=voice,
     )
     return _apply_prefs(cfg)

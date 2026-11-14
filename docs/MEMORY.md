@@ -1,4 +1,4 @@
-﻿# EVE 记忆报告（截至 v0.7.1）
+﻿# EVE 记忆报告（截至 v0.8.0）
 
 > 给下一个对话用：读完这份就能接手，不用翻聊天记录。
 > 这份是**对话总结**，不是交接清单；上一版留下的 `docs/HANDOFF.md` 已删（内容并进这份）。
@@ -10,7 +10,7 @@
 一个本地优先的个人 agent：**本地模型陪聊 + 操作电脑，云端模型干重活**。
 
 - 仓库：https://github.com/ws050525/EvE （分支 `main`）
-- 当前版本：`0.7.1`（`eve_core/version.py`），最新标签 `v0.7.1`
+- 当前版本：`0.8.0`（`eve_core/version.py`），最新标签 `v0.8.0`
 - 工作目录：`D:\1\EVE`
 
 ## 2. 环境（容易踩的坑）
@@ -49,13 +49,14 @@ eve_agent/  agent 层
   context.py    token 估算、按轮裁剪、滚动摘要、兜底截断
   checkpoint.py 断点：把"停在哪"存下来，下次接着做
   persona.py    人格状态机（抗议分级、颜文字节流）
-  tools/        registry / planning(todo_write) / project(多文件资料) / builtin(app_launch,app_list,screen_capture)
+  tools/        registry / planning(todo_write) / project(多文件) / browser(Edge CDP) /
+                builtin(app_launch,app_list,screen_capture)
                 / desktop / workspace / shell / web / office
 eve_ui/     界面
   app.py 入口与开发期开关；main_window 主窗；chat_view 气泡；mobius 莫比乌斯；orb 悬浮球
   bridge.py agent 跑在 QThread；voice.py 语音线程；tts.py 播报线程；theme.py 配色
 eve_cli.py  eve_gui.py  eve_tts.py（播调试听工具）  tools/（模型下载、播报预览）
-tests/      11 个文件 / 179 项，全部不需要模型
+tests/      12 个文件 / 191 项，全部不需要模型
 ```
 
 ## 4. 三个档位
@@ -64,7 +65,7 @@ tests/      11 个文件 / 179 项，全部不需要模型
 | --- | --- | --- | --- | --- |
 | `chat` | 聊天 | 本地 GGUF | 无 | 纯聊天，不收成悬浮球，步数 12 |
 | `desktop` | 桌面 | DeepSeek Flash（云端） | 12 个桌面/联网/计划工具 | 收成悬浮球，步数 20 |
-| `work` | 工作 | DeepSeek Flash | 16 个（含计划、多文件资料） | 收成悬浮球，步数 32 |
+| `work` | 工作 | DeepSeek Flash | 24 个（含计划、多文件、浏览器） | 收成悬浮球，步数 32 |
 
 内部 id 保持英文，显示名走 `[modes.*] label`。切档会重置上下文（prompt + 工具集变了）。
 **步数上限按档位走**（`[modes.*] max_steps`），`[app] max_steps` 只是兜底。
@@ -87,6 +88,7 @@ tests/      11 个文件 / 179 项，全部不需要模型
   见第 12 节；顺手清掉 537MB 没用的音色和 `.tmp/`。
 - **0.6.10**：声音不再发硬——后处理从"提亮优先"改成"柔和优先"，语速 1.12→1.05，
   句间留 70ms 换气，见 12.6 节。
+- **0.8.0**：浏览器真交互（Edge CDP，零下载）、多任务并行（最多 3 个）、断点列表，见第 15 节。
 - **0.7.1**：断点续跑 + 多文件资料（`checkpoint.py` / `project_init` / `project_status`），见第 14 节。
 - **0.7.0**：agent 能力节点——计划工具 `todo_write`、长文分块写（office_write append）、
   联网查证方法论、完全权限一键开关、桌面档换云端、随时停止，见第 13 节。
@@ -174,7 +176,7 @@ tests/      11 个文件 / 179 项，全部不需要模型
 & 'D:\python\python.exe' tests\test_voice.py # 单个测试
 ```
 
-测试共 11 个文件 / 179 项：persona / context / workspace / cost / apps / office / voice /
+测试共 12 个文件 / 191 项：persona / context / workspace / cost / apps / office / voice /
 agent_loop / planning / checkpoint / project（语音 50 项；计划 11 项；断点 7 项；多文件 8 项）。
 
 下载语音模型（SenseVoice + silero VAD）：
@@ -187,7 +189,7 @@ agent_loop / planning / checkpoint / project（语音 50 项；计划 11 项；�
 ## 11. 给下一个对话的开场建议
 
 > 读 `docs/MEMORY.md`。语音（第 12 节）和 agent 能力（第 13 节）两个节点都已完成，
-> 测试 179/179，代码在本地和 GitHub 上都是最新。
+> 测试 191/191，代码在本地和 GitHub 上都是最新。
 > 剩下的主要是**真人验收**：喊「伊芙」听播报、开完全权限跑一个真实复杂任务、
 > 看长任务中途按停止会不会干净退出。
 > 然后是打包（PyInstaller one-folder，模型外置）。
@@ -399,4 +401,54 @@ wav 放到 `.tmp/preview/` 供试听。
 - 断点只有"最近一份"，多任务并行时会互相覆盖。
 - 续跑不会自动挑回原来的档位/模型到界面显示（agent 内部会切回，UI 顶栏要手动刷新）。
 - 多文件只做 markdown 链接检查，Office 之间只核对存在性。
+- 打包（PyInstaller）按用户要求继续往后放。
+
+## 15. 浏览器真交互 / 多任务并行 / 断点列表（v0.8.0）
+
+### 15.1 浏览器（`eve_agent/tools/browser.py`）
+
+**为什么不用 Playwright**：要额外拉 100MB+ 的 Chromium，而这台机器已经装了 Edge。
+直接 `msedge.exe --remote-debugging-port` 起浏览器，用 WebSocket 发 CDP 命令，
+**零下载**，不需要驱动。`http_get` 仍然负责读静态正文，浏览器只负责"必须动手"的场景。
+
+实现要点：
+- 点击走 JS 注入（选择器优先，找不到再按可见文字匹配，都不中就回一份"页面上能点的东西"清单）；
+- 填写用原生 `value` setter + `input/change` 事件（React 那套监听才认）；
+- 回车提交走 CDP `Input.dispatchKeyEvent`（纯 JS 派的 KeyboardEvent 不触发默认提交）；
+- `_eval` 对"导航中上下文被销毁"这类错误自动重试——不重试的话每次跳转后的第一次读取都会炸。
+
+8 个工具：`browser_open / read / click / type / wait / screenshot / back / close`。
+`show=true` 用有头模式，方便人工登录和过验证码。
+
+### 15.2 多任务并行（`eve_ui/tasks.py` + `main_window`）
+
+每个任务 = 独立的 `AgentBridge`（自己的 QThread + Agent）+ 独立的 `ChatView`（放在
+`QStackedWidget` 里，切换只换页，滚动位置保留）+ 自己的计划/花费/忙闲状态。
+
+- 顶栏 **＋** 或 `Ctrl+T` 开新任务；超过 1 个就显示任务条（`●` 跑着 / `✓` 完成 / `✕` 出错）。
+- 同时最多 `MAX_RUNNING = 3` 个在跑。
+- 事件处理器都按 `tid` 分流：聊天内容写进自己的 ChatView，**状态栏/悬浮球/播报只对当前任务生效**。
+- 工具确认带 `tid`：后台任务要授权时弹卡片，答复送回那个任务的 worker（不是当前这个）。
+
+### 15.3 断点列表
+
+`tasks/<id>.json` 一任务一份，`latest.json` 只当"最近一份"的指针。
+`checkpoints.list_all()` 给界面列出来：右键「继续」按钮弹出断点列表（摘要 + 进度 + 时间）。
+任务成功收尾只删自己那份，**不动别人的**（这条有专门用例守着）。
+
+id 用 `task-<时间>-<4位随机>`：同一秒起几个任务不会撞车（第一版就撞了，测试抓到的）。
+
+### 15.4 实测（2026-11-14）
+
+- **浏览器**：agent 自己打开 example.com → 点 Learn more → 读 IANA 页面 → 退回 → 截图 → 关闭，
+  5 步、¥0.0031。截图确认页面对。
+- **并行**：两个任务同时跑（work 档 × 2），各自拿到自己的回答，状态都变 done。
+- **断点列表**：存 2 份断点 → 列表显示 2 条 → 删一条剩 1 条 → 清空后「继续」隐藏。
+- 测试 12 个文件 / 191 项全绿（新增 browser 10 项、checkpoint 多槽位 2 项）。
+
+### 15.5 还没做的
+
+- 多任务之间不能共享上下文（要共享得手动把结论复制过去）。
+- 任务条只显示在内存里，重启后只有断点列表能捞回来。
+- 浏览器只支持单个标签页（多标签要再包一层）。
 - 打包（PyInstaller）按用户要求继续往后放。

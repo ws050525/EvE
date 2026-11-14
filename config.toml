@@ -1,4 +1,4 @@
-# EVE 配置
+﻿# EVE 配置
 # 模型是一等公民：[models.*] 声明有什么，[modes.*] 只声明用哪个。
 # 换本地模型 / 换云端厂商 = 改这里的几行，不动代码。
 
@@ -19,6 +19,15 @@ auto_confirm = false         # 最高权限：所有工具（含写文件、跑�
 
 # ---------- work 档的边界 ----------
 work_root = "."              # 文件工具和 shell_exec 的根目录，越界一律拒绝
+
+# ---------- 浏览器真交互 ----------
+# 用本机已装的 Edge（走 CDP），不下载任何浏览器。
+# 需要人工登录 / 过验证码时，把 headless 改成 false，或者让 agent 调 browser_open(show=true)。
+[browser]
+headless = true
+port = 9333                  # 调试端口，被占用就换一个
+binary = ""                  # 留空自动找 Edge / Chrome；也可以写全路径
+profile = ""                 # 留空用 .tmp/browser-profile（登录状态会留在这里）
 
 # ---------- 语音 ----------
 # 模型放在 models/voice/ 下（不进版本库）。识别用 sherpa-onnx，只依赖 onnxruntime。
@@ -147,7 +156,7 @@ temperature = 0.2
 label = "工作"
 model = "deepseek-flash"     # 默认 flash：够用且便宜；要更强就在模型菜单里临时换 pro
 system_prompt = "prompts/work.md"
-tools = ["todo_write", "project_init", "project_status", "web_search", "http_get", "fs_read", "fs_write", "fs_list", "office_write", "shell_exec", "app_launch", "app_list", "window_list", "window_focus", "key_type", "screen_capture"]
+tools = ["todo_write", "project_init", "project_status", "web_search", "http_get", "browser_open", "browser_read", "browser_click", "browser_type", "browser_wait", "browser_screenshot", "browser_back", "browser_close", "fs_read", "fs_write", "fs_list", "office_write", "shell_exec", "app_launch", "app_list", "window_list", "window_focus", "key_type", "screen_capture"]
 require_confirm = true
 max_tokens = 8192            # 写文章/长文档时一次几千字，2048 会被砍成半句
 max_steps = 32               # 查资料 → 写正文 → 做 PPT → 自检，十几步不够用

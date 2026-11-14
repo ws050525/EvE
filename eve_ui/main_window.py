@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
     QListWidgetItem,
     QMenu,
     QPushButton,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -44,6 +45,7 @@ from .bridge import AgentBridge
 from .chat_view import ChatView
 from .mobius import MobiusWidget
 from .orb import OrbWindow
+from .tasks import MAX_RUNNING, Task
 from .tts import TtsBridge
 from .voice import VoiceBridge, WakeBridge
 from eve_core.config import load_config, save_preference, save_voice_preference
@@ -370,9 +372,14 @@ class ChatWindow(QWidget):
         self._ctx_effective = 0
         self._steps = 12
         self._pending_confirm: dict | None = None
+        # 多任务：每个任务有自己的 AgentBridge 和聊天视图，切换只换视图
+        self._tasks: dict[str, Task] = {}
+        self._order: list[str] = []
+        self._active_id = ""
+        self._task_seq = 0
 
         self._build()
-        self._bridge = AgentBridge(config_path, self, autostart=False)
+        self._config_path = config_path
         self.confirm_card = ConfirmCard(self)
         self.confirm_card.decided.connect(self._resolve_pending)
         self._orb = OrbWindow()
@@ -430,11 +437,17 @@ class ChatWindow(QWidget):
         if self._tts_enabled:
             # 提前把 VITS 加载好，第一句回复不用再等那 2 秒
             QTimer.singleShot(1500, self._tts.preload)
+
         self._wire()
-        # 指定了 EVE_MODEL 时跳过本地预加载，避免白起一次本地引擎
-        if not os.environ.get("EVE_MODEL"):
-            self._bridge.ready.connect(lambda *_: self._bridge.preload())
-        self._bridge.start()
+        # 开第一个任务：多任务从这里长出来
+        first = self._spawn_task(mode=self._mode)
+        if first is not None:
+            self._active_id = first.id
+            self.chat_stack.setCurrentWidget(first.chat)
+            self._refresh_task_bar()
+            # 指定了 EVE_MODEL 时跳过本地预加载，避免白起一次本地引擎
+            if not os.environ.get("EVE_MODEL"):
+                first.bridge.ready.connect(lambda *_: first.bridge.preload())
 
     # ---------- 构建 ----------
 
@@ -443,6 +456,8 @@ class ChatWindow(QWidget):
         root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
         root.addWidget(self._build_top_bar())
+        self.task_bar = self._build_task_bar()
+        root.addWidget(self.task_bar)
 
         body = QVBoxLayout()
         body.setContentsMargins(SIDE, 4, SIDE, 0)
@@ -451,9 +466,10 @@ class ChatWindow(QWidget):
         self.hero = self._build_hero()
         body.addWidget(self.hero, 1)
 
-        self.chat = ChatView(self)
-        self.chat.hide()
-        body.addWidget(self.chat, 0)
+        # 每个任务一个 ChatView：切任务只换 Stack 的当前页，滚动位置都保留
+        self.chat_stack = QStackedWidget(self)
+        self.chat_stack.hide()
+        body.addWidget(self.chat_stack, 0)
 
         self.status = QLabel("", self)
         self.status.setAlignment(Qt.AlignCenter)
@@ -476,6 +492,185 @@ class ChatWindow(QWidget):
         root.addSpacing(10)
 
         root.addLayout(self._build_input_row())
+
+    def _build_task_bar(self) -> QWidget:
+        bar = QWidget(self)
+        bar.setVisible(False)
+        layout = QHBoxLayout(bar)
+        layout.setContentsMargins(SIDE + 4, 2, SIDE + 4, 2)
+        layout.setSpacing(6)
+        self._task_chips_layout = layout
+        self._task_chips: dict[str, QPushButton] = {}
+        return bar
+
+    def _refresh_task_bar(self) -> None:
+        """任务数 > 1 才显示。chip 很少，整条重建比增量维护简单。"""
+        layout = self._task_chips_layout
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._task_chips = {}
+
+        if len(self._order) <= 1:
+            self.task_bar.setVisible(False)
+            return
+
+        self.task_bar.setVisible(True)
+        for index, tid in enumerate(self._order, 1):
+            task = self._tasks.get(tid)
+            if task is None:
+                continue
+            chip = QPushButton(f"{task.icon} {index}. {task.short_title}", self.task_bar)
+            chip.setFixedHeight(22)
+            chip.setCursor(Qt.PointingHandCursor)
+            chip.setToolTip(
+                f"{task.title}\n状态：{task.status}"
+                + (f"\n花费：¥{task.cost:.4f}" if task.cost else "")
+                + "\n点一下切换，右键关闭"
+            )
+            chip.setStyleSheet(
+                theme.PERM_CHIP_ON_QSS if tid == self._active_id else theme.MODE_CHIP_QSS
+            )
+            chip.clicked.connect(lambda _=False, target=tid: self._switch_task(target))
+            chip.setContextMenuPolicy(Qt.CustomContextMenu)
+            chip.customContextMenuRequested.connect(
+                lambda _pos, target=tid, widget=chip: self._task_chip_menu(target, widget)
+            )
+            layout.addWidget(chip)
+            self._task_chips[tid] = chip
+        layout.addStretch(1)
+
+    def _task_chip_menu(self, tid: str, widget: QWidget) -> None:
+        task = self._tasks.get(tid)
+        if task is None:
+            return
+        menu = QMenu(widget)
+        menu.setStyleSheet(theme.MENU_QSS)
+        menu.addAction("切到这个任务").triggered.connect(
+            lambda: self._switch_task(tid)
+        )
+        menu.addAction("停止它").triggered.connect(
+            lambda: task.bridge.cancel() if task.bridge else None
+        )
+        menu.addAction("关闭任务").triggered.connect(lambda: self._close_task(tid))
+        menu.exec(widget.mapToGlobal(QPoint(0, widget.height() + 4)))
+
+    @property
+    def _task(self):
+        return self._tasks.get(self._active_id)
+
+    @property
+    def chat(self):
+        task = self._tasks.get(self._active_id)
+        return task.chat if task else None
+
+    @property
+    def _bridge(self):
+        task = self._tasks.get(self._active_id)
+        return task.bridge if task else None
+
+    def _spawn_task(self, mode: str | None = None, request: str = "") -> Task | None:
+        """开一个新任务。超过并发上限就不开，返回 None。"""
+        running = sum(1 for item in self._tasks.values() if item.busy)
+        if running >= MAX_RUNNING:
+            self._set_status(f"同时最多跑 {MAX_RUNNING} 个任务，先等一个跑完，或者停掉一个")
+            return None
+
+        self._task_seq += 1
+        tid = f"task-{self._task_seq}"
+        task = Task(
+            id=tid,
+            mode=mode or self._mode,
+            request=request,
+            title=request or f"任务 {self._task_seq}",
+        )
+        task.chat = ChatView(self)
+        task.chat.hide()
+        self.chat_stack.addWidget(task.chat)
+
+        task.bridge = AgentBridge(self._config_path, self, autostart=False)
+        self._wire_task(task)
+        self._tasks[tid] = task
+        self._order.append(tid)
+        task.bridge.start()
+        self._refresh_task_bar()
+        return task
+
+    def _wire_task(self, task: Task) -> None:
+        tid = task.id
+        bridge = task.bridge
+        bridge.ready.connect(lambda mid, label, t=tid: self._on_ready(t, mid, label))
+        bridge.event.connect(lambda kind, data, t=tid: self._on_event(t, kind, data))
+        bridge.replied.connect(lambda text, t=tid: self._on_replied(t, text))
+        bridge.failed.connect(lambda msg, t=tid: self._on_failed(t, msg))
+        bridge.mode_changed.connect(
+            lambda mode, mid, t=tid: self._on_mode_changed(t, mode, mid)
+        )
+        bridge.confirm_required.connect(
+            lambda name, args, t=tid: self._on_confirm_required(t, name, args)
+        )
+        bridge.limits_changed.connect(
+            lambda setting, effective, steps, t=tid: self._on_limits_changed(
+                t, setting, effective, steps
+            )
+        )
+        bridge.modes_ready.connect(self._on_modes_ready)
+        bridge.models_ready.connect(self._on_models_ready)
+        bridge.keys_ready.connect(self._on_keys_ready)
+
+    def _switch_task(self, tid: str) -> None:
+        if tid == self._active_id or tid not in self._tasks:
+            return
+        self._active_id = tid
+        task = self._tasks[tid]
+        self.chat_stack.setCurrentWidget(task.chat)
+        self._sync_active_ui()
+        self._refresh_task_bar()
+
+    def _sync_active_ui(self) -> None:
+        """切任务时把顶栏和输入区同步成这个任务的状态。"""
+        task = self._task
+        if task is None:
+            return
+        self._mode = task.mode
+        self._refresh_mode_chip()
+        if task.model:
+            label = next(
+                (str(row.get("label") or row.get("id")) for row in self._models
+                 if row.get("id") == task.model),
+                task.model,
+            )
+            self.model_label.setText(label)
+        self._update_cost_from(task)
+        self._set_busy(task.busy)
+        if self._started_chat:
+            self.chat_stack.show()
+            self.hero.hide()
+
+    def _close_task(self, tid: str) -> None:
+        task = self._tasks.get(tid)
+        if task is None:
+            return
+        try:
+            task.bridge.shutdown()
+        except Exception:
+            pass
+        self.chat_stack.removeWidget(task.chat)
+        task.chat.deleteLater()
+        self._tasks.pop(tid, None)
+        if tid in self._order:
+            self._order.remove(tid)
+        if self._active_id == tid:
+            self._active_id = self._order[-1] if self._order else ""
+            task = self._task
+            if task is not None:
+                self.chat_stack.setCurrentWidget(task.chat)
+                self._sync_active_ui()
+            else:
+                self._spawn_task()
+        self._refresh_task_bar()
 
     def _build_top_bar(self) -> QWidget:
         bar = QWidget(self)
@@ -526,6 +721,16 @@ class ChatWindow(QWidget):
         self.perm_chip.setStyleSheet(theme.PERM_CHIP_QSS)
         self.perm_chip.clicked.connect(self._toggle_auto_confirm)
         layout.addWidget(self.perm_chip, 0, Qt.AlignVCenter)
+        layout.addSpacing(4)
+
+        # 新任务：后台任务不会被它打断，切过去就是一份干净的上下文
+        self.new_task_btn = QPushButton("＋", bar)
+        self.new_task_btn.setFixedSize(26, 20)
+        self.new_task_btn.setCursor(Qt.PointingHandCursor)
+        self.new_task_btn.setStyleSheet(theme.MODE_CHIP_QSS)
+        self.new_task_btn.setToolTip("开一个新任务（Ctrl+T）。正在跑的任务会继续跑。")
+        self.new_task_btn.clicked.connect(self._new_task_clicked)
+        layout.addWidget(self.new_task_btn, 0, Qt.AlignVCenter)
         layout.addSpacing(4)
 
         self.model_label = QPushButton("", bar)
@@ -631,8 +836,12 @@ class ChatWindow(QWidget):
         self.resume_btn.setMinimumHeight(44)
         self.resume_btn.setFixedWidth(64)
         self.resume_btn.setVisible(False)
-        self.resume_btn.setToolTip("接着上次没做完的任务继续（Ctrl+R）")
-        self.resume_btn.clicked.connect(self._resume_task)
+        self.resume_btn.setToolTip("接着上次没做完的任务继续（Ctrl+R），右键看断点列表")
+        self.resume_btn.clicked.connect(lambda _checked=False: self._resume_task())
+        self.resume_btn.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.resume_btn.customContextMenuRequested.connect(
+            lambda _pos: self._open_resume_menu()
+        )
 
         row.addWidget(self.input, 1)
         row.addWidget(self.resume_btn)
@@ -643,20 +852,12 @@ class ChatWindow(QWidget):
     # ---------- 接线 ----------
 
     def _wire(self) -> None:
-        self._bridge.ready.connect(self._on_ready)
-        self._bridge.event.connect(self._on_event)
-        self._bridge.replied.connect(self._on_replied)
-        self._bridge.failed.connect(self._on_failed)
-        self._bridge.mode_changed.connect(self._on_mode_changed)
-        self._bridge.modes_ready.connect(self._on_modes_ready)
-        self._bridge.models_ready.connect(self._on_models_ready)
-        self._bridge.keys_ready.connect(self._on_keys_ready)
-        self._bridge.limits_changed.connect(self._on_limits_changed)
-        self._bridge.confirm_required.connect(self._on_confirm_required)
-
+        # 每个任务的 bridge 在 _wire_task 里单独接线（多任务各连各的），
+        # 这里只剩全局快捷键。
         QShortcut(QKeySequence("Ctrl+Space"), self, activated=self._on_voice)
         QShortcut(QKeySequence("Esc"), self, activated=self._stop_task)
         QShortcut(QKeySequence("Ctrl+R"), self, activated=self._resume_task)
+        QShortcut(QKeySequence("Ctrl+T"), self, activated=self._new_task_clicked)
 
     # ---------- 交互 ----------
 
@@ -684,6 +885,14 @@ class ChatWindow(QWidget):
 
         self._enter_chat()
         self.chat.add_message("user", text)
+        task = self._task
+        if task is not None:
+            if not task.request:
+                # 第一条消息就是这个任务的名字
+                task.request = text
+                task.title = text
+                self._refresh_task_bar()
+            task.set_status("running")
         self._set_busy(True)
         self._pause_wake()
         # 上一轮还在念就别念了：新问题已经开口，旧回答继续播只是噪音
@@ -839,7 +1048,13 @@ class ChatWindow(QWidget):
         self._set_status(f"切换到 {mode} 档…")
         self._bridge.set_mode(mode)
 
-    def _on_mode_changed(self, mode: str, model_id: str) -> None:
+    def _on_mode_changed(self, tid: str, mode: str, model_id: str) -> None:
+        task = self._tasks.get(tid)
+        if task is not None:
+            task.mode = mode
+            task.model = model_id
+        if tid != self._active_id:
+            return
         self._mode = mode
         self._switching = False
         self._refresh_mode_chip()
@@ -848,7 +1063,7 @@ class ChatWindow(QWidget):
         if self._orb.isVisible():
             self._orb.bubble(f"{self._mode_label(mode)}档", model_id)
         # 不清空对话：切断上下文的是 agent，界面没必要把用户刚说的话抹掉
-        if self._started_chat:
+        if self._started_chat and self.chat is not None:
             self.chat.add_note(
                 f"已切换到{self._mode_label(mode)}档 · {model_id}（上下文已重置）"
             )
@@ -1031,6 +1246,10 @@ class ChatWindow(QWidget):
         self._set_status(text)
 
     def _update_cost(self, data: dict) -> None:
+        task = self._task
+        if task is not None:
+            task.last_usage = dict(data)
+            task.cost = float(data.get("session_cost") or 0)
         self._last_usage = dict(data)
         if data.get("call_kind") == "summary":
             return  # 摘要的用量只进累计，不代表"这一次回答"
@@ -1039,9 +1258,21 @@ class ChatWindow(QWidget):
             format_money(self._session_cost) if self._session_cost > 0 else ""
         )
 
+    def _update_cost_from(self, task) -> None:
+        """切任务时把花费显示换成这个任务的账。"""
+        self._last_usage = dict(task.last_usage)
+        self._session_cost = float(task.cost)
+        self.cost_label.setText(
+            format_money(self._session_cost) if self._session_cost > 0 else ""
+        )
+
     # ---------- 上下文预算 / 步数 ----------
 
-    def _on_limits_changed(self, setting: int, effective: int, steps: int) -> None:
+    def _on_limits_changed(
+        self, tid: str, setting: int, effective: int, steps: int
+    ) -> None:
+        if tid != self._active_id:
+            return
         self._ctx_setting = int(setting)
         self._ctx_effective = int(effective)
         self._steps = int(steps)
@@ -1116,19 +1347,23 @@ class ChatWindow(QWidget):
 
     # ---------- 工具确认 ----------
 
-    def _on_confirm_required(self, name: str, args: dict) -> None:
+    def _on_confirm_required(self, tid: str, name: str, args: dict) -> None:
+        task = self._tasks.get(tid)
         if os.environ.get("EVE_AUTO_CONFIRM") == "1":
-            self.chat.add_note(f"已自动允许 {name}（测试模式）")
-            self._bridge.answer_confirm(True)
+            if task is not None and task.chat is not None:
+                task.chat.add_note(f"已自动允许 {name}（测试模式）")
+            if task is not None and task.bridge is not None:
+                task.bridge.answer_confirm(True)
             return
 
-        self._pending_confirm = {"name": name, "args": dict(args)}
+        self._pending_confirm = {"tid": tid, "name": name, "args": dict(args)}
         preview = "，".join(f"{k}={v}" for k, v in args.items()) or "（无参数）"
         if len(preview) > 220:
             preview = preview[:220] + "…"
 
-        # agent 干活时主窗已经收成球了，许可就贴到球上，别再把窗口弹回来
-        if self._orb.isVisible():
+        # 后台任务的确认：只弹卡片，不把窗口拉回来
+        active = tid == self._active_id
+        if active and self._orb.isVisible():
             self._orb.set_state("thinking")
             self._orb.ask_confirm(name, preview)
         else:
@@ -1142,8 +1377,12 @@ class ChatWindow(QWidget):
         self.confirm_card.hide()
         self._orb.cancel_confirm()
         name = pending["name"]
-        self.chat.add_note(f"{'已允许' if allowed else '已拒绝'} {name}")
-        self._bridge.answer_confirm(bool(allowed))
+        tid = pending.get("tid") or self._active_id
+        task = self._tasks.get(tid)
+        if task is not None and task.chat is not None:
+            task.chat.add_note(f"{'已允许' if allowed else '已拒绝'} {name}")
+        if task is not None and task.bridge is not None:
+            task.bridge.answer_confirm(bool(allowed))
 
     def _enter_chat(self) -> None:
         """空态 → 对话态：莫比乌斯从中间飞到顶栏，其余内容交叉淡入淡出。"""
@@ -1182,15 +1421,15 @@ class ChatWindow(QWidget):
         hero_fade.start(QPropertyAnimation.DeleteWhenStopped)
 
         # 4. 对话区淡入（稍微延后，避免两件事同时抢注意力）
-        self.chat.show()
-        chat_effect = QGraphicsOpacityEffect(self.chat)
-        self.chat.setGraphicsEffect(chat_effect)
+        self.chat_stack.show()
+        chat_effect = QGraphicsOpacityEffect(self.chat_stack)
+        self.chat_stack.setGraphicsEffect(chat_effect)
         chat_fade = QPropertyAnimation(chat_effect, b"opacity", self)
         chat_fade.setDuration(280)
         chat_fade.setStartValue(0.0)
         chat_fade.setEndValue(1.0)
         chat_fade.setEasingCurve(QEasingCurve.OutCubic)
-        chat_fade.finished.connect(lambda: self.chat.setGraphicsEffect(None))
+        chat_fade.finished.connect(lambda: self.chat_stack.setGraphicsEffect(None))
         QTimer.singleShot(110, lambda: chat_fade.start(QPropertyAnimation.DeleteWhenStopped))
 
         # 5. 主动画：大环飞到顶栏并缩到 26px
@@ -1217,7 +1456,16 @@ class ChatWindow(QWidget):
         self.mobius_small.setGraphicsEffect(None)
         self.update()
 
-    def _set_busy(self, busy: bool) -> None:
+    def _set_busy(self, busy: bool, tid: str | None = None) -> None:
+        tid = tid or self._active_id
+        task = self._tasks.get(tid)
+        if task is not None:
+            task.busy = busy
+            task.touch()
+        if tid != self._active_id:
+            # 后台任务忙不忙，只影响它自己的 chip，不动输入区
+            self._refresh_task_bar()
+            return
         self._busy = busy
         self.input.setEnabled(not busy)
         # 忙的时候这颗按钮变成"停止"：长任务跑到一半总得有个地方能叫停
@@ -1225,12 +1473,22 @@ class ChatWindow(QWidget):
         self.send_btn.setEnabled(True)  # 一直可点：闲着是发送，忙着是停止
         if not busy:
             self.input.setFocus()
+        self._refresh_task_bar()
 
     def _on_send_clicked(self) -> None:
         if self._busy:
             self._stop_task()
         else:
             self._send()
+
+    def _new_task_clicked(self) -> None:
+        """开一个新任务并切过去。后台任务继续跑，不受影响。"""
+        task = self._spawn_task(mode=self._mode)
+        if task is None:
+            return
+        self._switch_task(task.id)
+        self._set_status("新任务：说句话就开始")
+        self.input.setFocus()
 
     def _stop_task(self) -> None:
         """叫停当前任务。agent 会在这一步结束后退出循环。"""
@@ -1242,7 +1500,7 @@ class ChatWindow(QWidget):
         self._set_status("正在停止…（当前这一步跑完就停）")
         self._set_state("idle")
 
-    def _resume_task(self) -> None:
+    def _resume_task(self, task_id: str | None = None) -> None:
         """接着上次没做完的活：上下文和计划由 agent 自己捞回来。"""
         if self._busy:
             return
@@ -1253,24 +1511,44 @@ class ChatWindow(QWidget):
         self._tts.cancel()
         self._set_status("接着上次的活…")
         self._set_state("thinking")
-        self._bridge.resume()
+        self._bridge.resume(task_id)
+
+    def _open_resume_menu(self) -> None:
+        """断点列表：存下来的每个任务都能挑一个继续。"""
+        from eve_agent.checkpoint import list_all
+
+        items = list_all(self._data_dir)
+        menu = QMenu(self)
+        menu.setStyleSheet(theme.MENU_QSS)
+        if not items:
+            action = menu.addAction("没有保存的断点")
+            action.setEnabled(False)
+        for item in items:
+            title = (item.request or item.id)[:26]
+            label = f"{title}　{item.done_steps}/{len(item.todo)} 步 · {item.updated[:16]}"
+            menu.addAction(label).triggered.connect(
+                lambda _checked=False, cid=item.id: self._resume_task(cid)
+            )
+        menu.exec(self.resume_btn.mapToGlobal(QPoint(0, -6 - 26 * len(items) - 8)))
 
     def _refresh_resume_btn(self) -> None:
         """有断点才显示「继续」。每次任务结束/中断都刷一次。"""
         button = getattr(self, "resume_btn", None)
         if button is None:
             return
-        snapshot = None
+        items: list = []
         try:
-            from eve_agent.checkpoint import load as load_checkpoint
+            from eve_agent.checkpoint import list_all
 
-            snapshot = load_checkpoint(self._data_dir)
+            items = list_all(self._data_dir)
         except Exception:
-            snapshot = None
-        if snapshot is None:
+            items = []
+
+        if not items:
             button.setVisible(False)
             return
 
+        snapshot = items[0]
         bits: list[str] = []
         if snapshot.request:
             bits.append(snapshot.request[:26])
@@ -1279,7 +1557,10 @@ class ChatWindow(QWidget):
         if snapshot.files:
             bits.append(f"{len(snapshot.files)} 个文件")
         button.setVisible(True)
-        button.setToolTip("接着上次没做完的任务继续（Ctrl+R）\n" + " · ".join(bits))
+        more = f"（还有 {len(items) - 1} 个断点，右键看列表）" if len(items) > 1 else ""
+        button.setToolTip(
+            "接着上次没做完的任务继续（Ctrl+R）\n" + " · ".join(bits) + more
+        )
 
     def _set_status(self, text: str) -> None:
         self.status.setText(text)
@@ -1306,8 +1587,12 @@ class ChatWindow(QWidget):
 
     # ---------- 事件 ----------
 
-    def _on_ready(self, model_id: str, label: str) -> None:
-        self.model_label.setText(label or model_id)
+    def _on_ready(self, tid: str, model_id: str, label: str) -> None:
+        task = self._tasks.get(tid)
+        if task is not None:
+            task.model = model_id
+        if tid == self._active_id:
+            self.model_label.setText(label or model_id)
 
     def _on_modes_ready(self, modes: list) -> None:
         # 新格式是 [{"id","label"}]，兼容老的 [str]
@@ -1331,68 +1616,105 @@ class ChatWindow(QWidget):
             {row["id"]: row["label"] for row in self._modes}
         )
 
-    def _on_event(self, kind: str, data: dict) -> None:
-        self._mirror_to_orb(kind, data)
+    def _on_event(self, tid: str, kind: str, data: dict) -> None:
+        task = self._tasks.get(tid)
+        if task is None:
+            return
+        active = tid == self._active_id
+        chat = task.chat
+        status_changed = False
+
+        if active:
+            self._mirror_to_orb(kind, data)
+
         if kind == "engine_starting":
-            self._set_state("boot")
-            self._set_status("加载模型…")
+            task.set_status("running")
+            status_changed = True
+            if active:
+                self._set_state("boot")
+                self._set_status("加载模型…")
         elif kind == "engine_ready":
-            self._set_state("idle")
-            seconds = data.get("load_seconds")
-            self._set_status(f"就绪 {seconds}s" if seconds else "就绪")
+            if active:
+                self._set_state("idle")
+                seconds = data.get("load_seconds")
+                self._set_status(f"就绪 {seconds}s" if seconds else "就绪")
         elif kind == "engine_stopped":
-            self._set_state("muted")
-            self._set_status("引擎已停止")
+            if active:
+                self._set_state("muted")
+                self._set_status("引擎已停止")
         elif kind == "thinking":
-            self._set_state("thinking")
-            self._set_status("思考中…")
+            task.set_status("running")
+            status_changed = True
+            if active:
+                step = data.get("step")
+                self._set_state("thinking")
+                self._set_status(f"思考中…（第 {step} 步）" if step else "思考中…")
         elif kind == "reply_chunk":
-            if not self._streaming:
-                self._streaming = True
-                self._set_state("streaming")
-                self._set_status("")
+            if not task.streaming:
+                task.streaming = True
+                if active:
+                    self._set_state("streaming")
+                    self._set_status("")
             delta = data.get("text", "")
-            self.chat.push_chunk(delta)
-            self._feed_speech(delta)
+            chat.push_chunk(delta)
+            if active:
+                self._feed_speech(delta)
         elif kind == "tool_start":
-            self._set_state("acting")
-            self._set_status(f"执行 {data.get('name')}…")
-            self._tool_row = self.chat.add_tool(data.get("name", ""), data.get("args") or {})
+            task.set_status("running")
+            status_changed = True
+            task.tool_row = chat.add_tool(data.get("name", ""), data.get("args") or {})
+            if active:
+                self._set_state("acting")
+                self._set_status(f"执行 {data.get('name')}…")
         elif kind == "tool_end":
             ok = bool(data.get("ok"))
-            self._set_status(f"{data.get('name')} {'完成' if ok else '失败'}")
-            if self._tool_row is not None:
-                self._tool_row.set_result(ok, str(data.get("result") or ""))
-                self._tool_row = None
+            if task.tool_row is not None:
+                task.tool_row.set_result(ok, str(data.get("result") or ""))
+                task.tool_row = None
+            if active:
+                self._set_status(f"{data.get('name')} {'完成' if ok else '失败'}")
         elif kind == "context_compacting":
-            self._set_state("thinking")
-            self._set_status("整理上下文…")
+            if active:
+                self._set_state("thinking")
+                self._set_status("整理上下文…")
         elif kind == "context_compacted":
-            after = data.get("tokens_after")
-            self._set_status(f"上下文 ≈{after} tokens" if after else "")
+            if active:
+                after = data.get("tokens_after")
+                self._set_status(f"上下文 ≈{after} tokens" if after else "")
         elif kind == "usage":
-            self._update_cost(data)
+            task.last_usage = dict(data)
+            task.cost = float(data.get("session_cost") or 0)
+            if active:
+                self._update_cost(data)
         elif kind == "settings":
             message = str(data.get("message") or "")
-            if message:
+            if active and message:
                 self._set_status(message)
         elif kind == "reply_done":
-            self._last_latency = int(data.get("latency_ms") or 0)
+            task.last_latency = int(data.get("latency_ms") or 0)
+            if active:
+                self._last_latency = task.last_latency
         elif kind == "truncated":
-            self._set_status("输出被截断，结果可能不完整")
+            if active:
+                self._set_status("输出被截断，结果可能不完整")
         elif kind == "checkpoint_saved":
-            self._refresh_resume_btn()
+            if active:
+                self._refresh_resume_btn()
             done = data.get("done")
             total = data.get("total")
             where = f"（{done}/{total} 步）" if total else ""
-            if self._started_chat:
-                self.chat.add_note(f"进度已存档{where} · 点「继续」接着做")
+            chat.add_note(f"进度已存档{where} · 点「继续」接着做")
         elif kind == "task_resumed":
-            if self._started_chat:
-                self.chat.add_note("从上次的断点继续")
+            chat.add_note("从上次的断点继续")
         elif kind == "error":
-            self._set_state("error")
-            self._set_status("出错了")
+            task.set_status("error")
+            status_changed = True
+            if active:
+                self._set_state("error")
+                self._set_status("出错了")
+
+        if status_changed:
+            self._refresh_task_bar()
 
     def _feed_speech(self, delta: str) -> None:
         """模型每吐一段字就喂给播报：边生成边念，声音不落后于文字。
@@ -1429,7 +1751,25 @@ class ChatWindow(QWidget):
             return True
         return False
 
-    def _on_replied(self, text: str) -> None:
+    def _on_replied(self, tid: str, text: str) -> None:
+        task = self._tasks.get(tid)
+        if task is None:
+            return
+        active = tid == self._active_id
+
+        if task.streaming:
+            task.chat.end_stream(text)
+            task.streaming = False
+        else:
+            task.chat.add_message("assistant", text)
+        task.set_status("done")
+        self._refresh_task_bar()
+
+        if not active:
+            # 后台任务跑完了：不抢焦点，只在状态栏提一句
+            self._set_status(f"「{task.short_title}」跑完了 · 点上面的任务条切过去看")
+            return
+
         # 干活时主窗是收起的。活干完了直接把界面拉回来，而不是在球上飘一句摘要——
         # 用户要看的是结果，不是提示。
         if self._collapsing:
@@ -1438,14 +1778,9 @@ class ChatWindow(QWidget):
             self._orb.set_state("happy")
             self._restore_from_orb()
 
-        if self._streaming:
-            self.chat.end_stream(text)
-            self._streaming = False
-        else:
-            self.chat.add_message("assistant", text)
         self._set_state("idle")
         self._set_status(self._metrics_text())
-        self._set_busy(False)
+        self._set_busy(False, tid)
 
         # 念出来。播报期间暂停唤醒，免得把自己说的「伊芙」当成唤醒词。
         # 要开播就别先唤醒：醒来又立刻暂停，多一次开关麦克风还可能误触发。
@@ -1463,8 +1798,20 @@ class ChatWindow(QWidget):
         if not self._busy:
             self._set_status(self._metrics_text())
 
-    def _on_failed(self, message: str) -> None:
-        self._streaming = False
+    def _on_failed(self, tid: str, message: str) -> None:
+        task = self._tasks.get(tid)
+        if task is None:
+            return
+        active = tid == self._active_id
+        task.streaming = False
+        task.set_status("error")
+        self._refresh_task_bar()
+        task.chat.add_message("system", message)
+
+        if not active:
+            self._set_status(f"「{task.short_title}」出错了 · 点任务条切过去看")
+            return
+
         # 出错就闭嘴，别让半句话继续念下去
         self._tts_streaming = False
         self._tts.cancel()
@@ -1474,9 +1821,8 @@ class ChatWindow(QWidget):
         if self._orb.isVisible():
             self._restore_from_orb()
         self._set_state("error")
-        self.chat.add_message("system", message)
         self._set_status("")
-        self._set_busy(False)
+        self._set_busy(False, tid)
         self._resume_wake()
         self._refresh_resume_btn()
 
@@ -1637,6 +1983,10 @@ class ChatWindow(QWidget):
         except Exception:
             pass
         try:
-            self._bridge.shutdown()
+            for task in list(self._tasks.values()):
+                try:
+                    task.bridge.shutdown()
+                except Exception:
+                    pass
         except Exception:
             pass

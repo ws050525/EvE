@@ -225,6 +225,76 @@ def finishing_the_task_clears_the_checkpoint():
         assert checkpoints.load(cfg.data_dir) is None, "任务做完就不该再留着断点"
 
 
+@case
+def several_tasks_keep_separate_checkpoints():
+    """多任务并行时各存各的，谁也别覆盖谁——这就是「断点列表」的基础。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        data = Path(tmp)
+        made = []
+        for index in (1, 2, 3):
+            cp = checkpoints.build(
+                mode="work",
+                model="flash",
+                reason="cancelled",
+                step=index,
+                max_steps=10,
+                request=f"任务{index}",
+                todo=[{"content": f"步骤{index}", "status": "pending"}],
+                messages=[{"role": "user", "content": f"任务{index}"}],
+            )
+            checkpoints.save(cp, data)
+            made.append(cp.id)
+
+        assert len(set(made)) == 3, made
+        listed = checkpoints.list_all(data)
+        assert len(listed) == 3, len(listed)
+        assert {item.request for item in listed} == {"任务1", "任务2", "任务3"}
+
+        # 删掉一条，别的还在
+        checkpoints.clear(data, made[0])
+        left = {item.request for item in checkpoints.list_all(data)}
+        assert left == {"任务2", "任务3"}, left
+
+        # 按 id 还能拿到指定那条
+        assert checkpoints.load(data, made[1]).request == "任务2"
+
+
+@case
+def finishing_one_task_leaves_other_checkpoints_alone():
+    """一个任务成功收尾，不该顺手把别的任务的断点删掉。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        cfg = load_config()
+        cfg.data_dir = Path(tmp)
+
+        other = checkpoints.build(
+            mode="work",
+            model="flash",
+            reason="cancelled",
+            step=2,
+            max_steps=10,
+            request="别人的任务",
+            todo=[],
+            messages=[{"role": "user", "content": "别人的任务"}],
+        )
+        checkpoints.save(other, Path(tmp))
+
+        agent = Agent(cfg, "work")
+
+        class DoneProvider:
+            name = "stub"
+            model = "stub"
+
+            def chat(self, messages, tools=None, *, max_tokens=512, temperature=0.7):
+                return ChatResult(content="好了。", model="stub")
+
+        agent._provider = DoneProvider()
+        agent._provider_model_id = agent.model_id
+
+        agent.send("跑完一个任务")
+        left = [item.request for item in checkpoints.list_all(Path(tmp))]
+        assert left == ["别人的任务"], left
+
+
 def main() -> int:
     failed = 0
     for fn in CHECKS:

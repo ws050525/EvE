@@ -210,15 +210,20 @@ class Agent:
         return snapshot
 
     def _clear_checkpoint(self) -> None:
+        """这个任务做完了，把它自己的存档删掉。**不动别人的断点**。"""
+        snapshot = self._checkpoint
         self._checkpoint = None
-        checkpoints.clear(self.cfg.data_dir)
+        if snapshot is None:
+            return
+        checkpoints.clear(self.cfg.data_dir, snapshot.id)
 
-    def resume(self) -> str | None:
+    def resume(self, task_id: str | None = None) -> str | None:
         """准备续跑：把上次的上下文、计划捞回来，返回给模型看的"上次进度"。
 
+        不给 task_id 就续最新那份；给了就续断点列表里指定的那条。
         没存过断点返回 None。调用方拿到 brief 之后照常 send(brief) 就行。
         """
-        snapshot = checkpoints.load(self.cfg.data_dir)
+        snapshot = checkpoints.load(self.cfg.data_dir, task_id)
         if snapshot is None:
             return None
 
