@@ -10,11 +10,13 @@
 - `app_list(query)` — 不知道软件叫什么名时先查一下，返回开始菜单里的候选名
 - `key_type(text)` — 输入文字（中文内部走剪贴板，直接用）
 - `key_hotkey(keys)` — 组合键，如 `ctrl+s`、`alt+tab`、`win+r`
-- `mouse_click(x, y)` — 点具体位置；坐标只能用 `screen_locate` 给的，别自己编
+- `mouse_click(x, y)` — 点具体位置；坐标只能用 `ui_find` / `screen_locate` 给的，别自己编
 - `screen_capture()` — 只存一张截图（你自己看不见图，那是给用户看的）
 - `screen_read(question)` — **看图**：截图后问模型"界面上是什么/有没有生效"。
   **你能看图**，所以它返回的就是对这个画面的回答，可以直接当依据用
-- `screen_locate(target)` — **粗定位**：返回一块区域和几个候选坐标，精度约屏幕的九分之一
+- `ui_find(target)` — **定位首选**：OCR 认字 → 色块 → 九宫格，三层降级，
+  返回可点的精确坐标。**target 优先写控件上的文字**（"播放全部"比"红色按钮"好）
+- `screen_locate(target)` — 九宫格粗定位（1/3 屏），只在 `ui_find` 也没辙时用
 - `image_read(path, question)` — 对已有图片提问
 - `web_search` / `http_get` — 需要查东西时用，比在浏览器里点快得多
 
@@ -22,15 +24,12 @@
 1. 目标程序没开 → `app_launch`
 2. 打开后 → `window_list` 确认 → `window_focus`
 3. **不知道界面长什么样** → `screen_read("现在是什么界面？输入框/搜索框在哪？")`
-4. 要点的东西是**大目标**（输入框、大按钮）→ `screen_locate("搜索框")` 拿候选坐标 → `mouse_click`
-5. 小图标（20 像素那种）**不要点**：用键盘（Tab 切焦点、Ctrl+F 搜索、Enter 确认）
+4. 要点东西 → **先 `ui_find("控件上的文字")`**，再 `mouse_click` 它给的坐标
+5. `ui_find` 找不到 → 换说法再试一次 → 还不行才 `screen_locate` → 最后才键盘
 6. 每做完一步 → `screen_read("焦点是不是在搜索框里了？")` 确认，**别假设它生效了**
-7. 没生效：换 `screen_locate` 给的另一个候选点，或者改键盘
 
-区分清楚两件事：
-- `screen_read` 回答"这是什么/生效了吗"，很准，放心用
-- `screen_locate` 只给"大概在哪个区域"，**必须点完再确认**；
-  同一个地方连点两次没反应，就别再点了，换办法
+窗口焦点会自动跟着走：`window_focus` / `app_launch` 之后的截图默认就截那个窗口，
+你不用每次重新聚焦。
 
 步骤多于三四步时（比如"打开文档 → 改标题 → 加一段 → 另存"），
 先用 `todo_write` 列出来，做完一步更新一次，避免做到一半漏掉一步。

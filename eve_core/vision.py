@@ -18,6 +18,7 @@ import base64
 import ctypes
 import io
 import re
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime
@@ -129,6 +130,30 @@ def _virtual_origin() -> tuple[int, int]:
         return 0, 0
 
 
+def _set_topmost(hwnd: int, on: bool) -> bool:
+    """把窗口临时置顶；返回它原本是不是已经置顶（用来还原）。
+
+    截图是"抓屏幕再裁"——目标窗口要是被别的窗口挡着，裁出来就是别人的画面
+    （实测裁到了 agent 自己的聊天窗口，模型对着错误的图分析得头头是道）。
+    置顶一下再抓，0.1 秒的事。
+    """
+    try:
+        user32 = ctypes.windll.user32
+        GWL_EXSTYLE, WS_EX_TOPMOST = -20, 0x00000008
+        SWP_NOMOVE, SWP_NOSIZE, SWP_NOACTIVATE = 0x0002, 0x0001, 0x0010
+        handle = ctypes.c_void_p(int(hwnd))
+        style = int(user32.GetWindowLongW(handle, GWL_EXSTYLE))
+        was_topmost = bool(style & WS_EX_TOPMOST)
+        target = -1 if on else -2  # HWND_TOPMOST / HWND_NOTOPMOST
+        user32.SetWindowPos(
+            handle, ctypes.c_void_p(target), 0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        )
+        return was_topmost
+    except Exception:
+        return True
+
+
 def window_info(hwnd: int) -> tuple[str, tuple[int, int, int, int]] | None:
     """指定窗口的 (标题, 矩形)。窗口不存在、最小化、太小都返回 None。"""
     try:
@@ -168,7 +193,17 @@ def capture(
     except ImportError as exc:
         raise RuntimeError("缺少 Pillow，无法截图") from exc
 
-    image = ImageGrab.grab(all_screens=True)
+    # 先把目标窗口顶上来，抓完再还原；否则裁到的是挡在它前面的窗口
+    restore = None
+    if hwnd and not full_screen and window_info(int(hwnd)) is not None:
+        restore = (int(hwnd), _set_topmost(int(hwnd), True))
+        time.sleep(0.12)
+    try:
+        image = ImageGrab.grab(all_screens=True)
+    finally:
+        if restore is not None:
+            _set_topmost(restore[0], restore[1])
+
     base_origin = _virtual_origin()
     origin = base_origin
     window_title = ""
@@ -425,6 +460,62 @@ def locate_grid(provider, shot, target: str, levels: int = 1) -> dict:
         "height": screen[3] - screen[1],
         "levels": levels,
     }
+
+
+def color_blocks(shot, min_area: int = 1500, limit: int = 4) -> list[dict]:
+    """找"饱和色的实心矩形"——按钮、色块图标。
+
+    只对纯色填充的控件有效（播放全部这种红胶囊）；透明按钮、纯文字按钮它抓不到，
+    那些交给 OCR。返回屏幕坐标的框，按面积从大到小。
+    """
+    try:
+        import cv2
+        import numpy as np
+    except ImportError:
+        return []
+
+    path = shot.path if isinstance(shot, Shot) else Path(shot)
+    origin = shot.origin if isinstance(shot, Shot) else (0, 0)
+    image = cv2.imread(str(path))
+    if image is None:
+        return []
+
+    hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+    saturation, value = hsv[:, :, 1], hsv[:, :, 2]
+    mask = ((saturation > 90) & (value > 70)).astype(np.uint8) * 255
+    kernel = np.ones((3, 3), np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, kernel)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_OPEN, kernel)
+    total, _labels, stats, centroids = cv2.connectedComponentsWithStats(mask, connectivity=8)
+
+    found = []
+    for index in range(1, total):
+        x, y, width, height, area = stats[index]
+        if area < min_area or width < 50 or height < 18 or width > 700 or height > 200:
+            continue
+        if area / float(width * height) < 0.65:
+            continue
+        if not 1.2 <= width / float(height) <= 8:
+            continue
+        cx, cy = centroids[index]
+        found.append(
+            {
+                "box": (
+                    int(x + origin[0]),
+                    int(y + origin[1]),
+                    int(x + width + origin[0]),
+                    int(y + height + origin[1]),
+                ),
+                "x": int(cx + origin[0]),
+                "y": int(cy + origin[1]),
+                "width": int(width),
+                "height": int(height),
+                "area": int(area),
+                "source": "color",
+            }
+        )
+    found.sort(key=lambda item: -item["area"])
+    return found[:limit]
 
 
 def ask(
