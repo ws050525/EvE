@@ -1,4 +1,4 @@
-﻿# EVE 记忆报告（截至 v0.12.0）
+﻿# EVE 记忆报告（截至 v0.12.1）
 
 > 给下一个对话用：读完这份就能接手，不用翻聊天记录。
 > 这份是**对话总结**，不是交接清单；上一版留下的 `docs/HANDOFF.md` 已删（内容并进这份）。
@@ -10,7 +10,7 @@
 一个本地优先的个人 agent：**本地模型陪聊 + 操作电脑，云端模型干重活**。
 
 - 仓库：https://github.com/ws050525/EvE （分支 `main`）
-- 当前版本：`0.12.0`（`eve_core/version.py`），最新标签 `v0.12.0`
+- 当前版本：`0.12.1`（`eve_core/version.py`），最新标签 `v0.12.1`
 - 工作目录：`D:\1\EVE`
 
 ## 2. 环境（容易踩的坑）
@@ -56,7 +56,7 @@ eve_ui/     界面
   app.py 入口与开发期开关；main_window 主窗；chat_view 气泡；mobius 莫比乌斯；orb 悬浮球
   bridge.py agent 跑在 QThread；voice.py 语音线程；tts.py 播报线程；theme.py 配色
 eve_cli.py  eve_gui.py  eve_tts.py（播调试听工具）  tools/（模型下载、播报预览）
-tests/      14 个文件 / 222 项，全部不需要模型
+tests/      14 个文件 / 224 项，全部不需要模型
 ```
 
 ## 4. 三个档位
@@ -88,6 +88,7 @@ tests/      14 个文件 / 222 项，全部不需要模型
   见第 12 节；顺手清掉 537MB 没用的音色和 `.tmp/`。
 - **0.6.10**：声音不再发硬——后处理从"提亮优先"改成"柔和优先"，语速 1.12→1.05，
   句间留 70ms 换气，见 12.6 节。
+- **0.12.1**：截图锁定"正在操作的窗口"，不再漂移，见 20.8。
 - **0.12.0**：视觉改走云端（DeepSeek Flash 本来就收图）、九宫格粗定位、步数 60/100、鬼打墙熔断，见第 20 节。
 - **0.11.0**：UI-TARS 真正跑通（image tokens 是关键）、修截图缩放导致坐标偏小的 bug，见第 19 节。
 - **0.10.2**：接 UI-TARS-1.5-7B（正在下载），加模型完整性检查，见第 19 节。
@@ -183,7 +184,7 @@ tests/      14 个文件 / 222 项，全部不需要模型
 & 'D:\python\python.exe' tests\test_voice.py # 单个测试
 ```
 
-测试共 14 个文件 / 222 项：persona / context / workspace / cost / apps / office / voice /
+测试共 14 个文件 / 224 项：persona / context / workspace / cost / apps / office / voice /
 agent_loop / planning / checkpoint / project（语音 50 项；计划 11 项；断点 7 项；多文件 8 项）。
 
 下载语音模型（SenseVoice + silero VAD）：
@@ -196,7 +197,7 @@ agent_loop / planning / checkpoint / project（语音 50 项；计划 11 项；�
 ## 11. 给下一个对话的开场建议
 
 > 读 `docs/MEMORY.md`。语音（第 12 节）和 agent 能力（第 13 节）两个节点都已完成，
-> 测试 222/222，代码在本地和 GitHub 上都是最新。
+> 测试 224/224，代码在本地和 GitHub 上都是最新。
 > 剩下的主要是**真人验收**：喊「伊芙」听播报、开完全权限跑一个真实复杂任务、
 > 看长任务中途按停止会不会干净退出。
 > 然后是打包（PyInstaller one-folder，模型外置）。
@@ -823,3 +824,26 @@ UI-TARS 文档说 GUI 任务 50–100 步，我们原来 desktop 只有 20 步�
 - 九宫格只有 1/3 屏精度 → 靠候选点 + 验证循环
 - 截图**不能进对话历史**（否则 100 步会把上下文塞爆、费用爆炸）：现在工具只返回文字，天然满足；
   以后要是改成"直接塞图给主模型"，必须做旧图裁剪
+
+### 20.8 窗口漂移（v0.12.1）
+
+**症状**：agent 让 `window_focus` 切到网易云，下一句 `screen_read` 又截回了 EVE 自己的窗口，
+模型对着一张聊天记录一本正经地分析，还给出坐标。
+
+**根因**：`screen_read` 截的是**前台窗口**，而 agent 自己就住在 EVE 窗口里，
+任何一次模型回复/界面刷新都可能把前台抢回去。
+
+**修法**：记住"当前在操作的窗口"（`desktop.set_target`，thread-local，多任务互不干扰）：
+
+| 动作 | 效果 |
+| --- | --- |
+| `window_focus` | 设为目标 |
+| `app_launch` | 启动/激活后设为目标 |
+| `window_close` | 关的是目标就清掉 |
+| `screen_read` / `screen_locate` | 截**目标窗口**；窗口没了/最小化才退回前台，再不行退回全屏 |
+
+**验证**：把网易云设为目标后，用 `_force_foreground` 把 EVE 抢到前台，再截——拿到的
+仍然是网易云 1588×1128。实跑一句"看现在在播什么歌"，返回 SADVENTURES / 03:05，没有截错窗口。
+
+**附带发现**：模型读小字（歌名）会抖，同一行两次读成 "TURES" / "SADVENTURES"。
+所以核对身份时优先用**窗口标题**（"歌名 - 歌手"），比 OCR 稳。

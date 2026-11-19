@@ -23,6 +23,7 @@ from typing import Any, Callable
 
 from eve_core import vision
 
+from . import desktop as desktop_tools
 from .registry import ToolRegistry, ToolSpec
 
 ProviderGetter = Callable[[], Any]
@@ -30,6 +31,14 @@ ProviderGetter = Callable[[], Any]
 
 def _where(shot) -> str:
     return f"活动窗口「{shot.window}」" if shot.window else "整个屏幕"
+
+
+def _target_hwnd() -> int:
+    """截图优先截 agent 正在操作的那个窗口，而不是碰巧在前台的那个。"""
+    try:
+        return int(desktop_tools.get_target()[0])
+    except Exception:
+        return 0
 
 
 def _cloud_provider(provider_getter: ProviderGetter | None):
@@ -46,7 +55,7 @@ def _screen_read(args: dict[str, Any], runtime, cfg, provider_getter=None) -> st
         "屏幕上现在是什么界面？有哪些窗口、按钮、输入框？关键元素大概在什么位置？"
     )
     try:
-        shot = vision.capture(full_screen=bool(args.get("full_screen")))
+        shot = vision.capture(full_screen=bool(args.get("full_screen")), hwnd=_target_hwnd())
     except Exception as exc:
         return f"[error] 截图失败：{type(exc).__name__}: {exc}"
 
@@ -93,7 +102,7 @@ def _screen_locate(args: dict[str, Any], runtime, cfg, provider_getter=None) -> 
         return "[error] 九宫格定位需要能看图的云端模型；本地模型请用 screen_read 描述后自行判断"
 
     try:
-        shot = vision.capture(full_screen=bool(args.get("full_screen")))
+        shot = vision.capture(full_screen=bool(args.get("full_screen")), hwnd=_target_hwnd())
     except Exception as exc:
         return f"[error] 截图失败：{type(exc).__name__}: {exc}"
 

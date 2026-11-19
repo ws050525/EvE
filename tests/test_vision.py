@@ -360,6 +360,46 @@ def vision_tools_degrade_gracefully():
     assert _screen_read({"question": "x"}, None, None).startswith("[error]")
 
 
+@case
+def target_window_is_remembered_per_thread():
+    """截图要截"在操作的那个窗口"，不是碰巧在前台的那个；多任务之间不能串。"""
+    import threading
+
+    from eve_agent.tools import desktop
+
+    desktop.set_target(1234, "记事本")
+    assert desktop.get_target() == (1234, "记事本")
+
+    seen = []
+
+    def worker():
+        seen.append(desktop.get_target())  # 新线程没设过，应该是空的
+        desktop.set_target(9, "别的窗口")
+        seen.append(desktop.get_target())
+
+    thread = threading.Thread(target=worker)
+    thread.start()
+    thread.join()
+
+    assert seen[0] == (0, ""), seen
+    assert seen[1] == (9, "别的窗口"), seen
+    assert desktop.get_target() == (1234, "记事本"), "主线程的目标不该被别的线程改掉"
+
+    desktop.clear_target()
+    assert desktop.get_target() == (0, "")
+
+
+@case
+def capture_falls_back_when_the_target_window_is_gone():
+    from eve_core import vision
+
+    with tempfile.TemporaryDirectory() as tmp:
+        shot = vision.capture(path=Path(tmp) / "a.png", hwnd=99999999)  # 不存在的句柄
+        assert shot.size[0] > 0 and shot.size[1] > 0
+        assert vision.window_info(99999999) is None
+        assert vision.window_info(0) is None
+
+
 def main() -> int:
     failed = 0
     for fn in CHECKS:

@@ -13,6 +13,7 @@ from __future__ import annotations
 import ctypes
 import ctypes.wintypes as wt
 import re
+import threading
 import time
 from typing import Any
 
@@ -44,6 +45,26 @@ def _pid_exe(pid: int) -> str:
 
 
 # ---------- 窗口（纯 ctypes，不引三方库）----------
+
+# 当前"在操作的窗口"。截图默认截它，而不是前台窗口——
+# 否则 agent 自己跑在 EVE 窗口里时，截到的永远是聊天窗口（踩过好几次）。
+_target = threading.local()
+
+
+def set_target(hwnd: int, title: str = "") -> None:
+    try:
+        _target.hwnd = int(hwnd or 0)
+        _target.title = title or ""
+    except (TypeError, ValueError):
+        _target.hwnd, _target.title = 0, ""
+
+
+def get_target() -> tuple[int, str]:
+    return getattr(_target, "hwnd", 0), getattr(_target, "title", "")
+
+
+def clear_target() -> None:
+    set_target(0, "")
 
 
 def _enum_windows() -> list[dict[str, Any]]:
@@ -123,7 +144,10 @@ def window_focus(args: dict[str, Any]) -> str:
             "可以让用户手动点一下，或用 key_hotkey('alt+tab') 换过去"
         )
     time.sleep(0.2)
-    return f"[ok] 已激活 hwnd={target}"
+    # 记住它：后面的截图要截这个窗口，而不是碰巧在前台的那个
+    title_of = next((w["title"] for w in _enum_windows() if w["hwnd"] == target), title)
+    set_target(target, title_of)
+    return f"[ok] 已激活 hwnd={target}（之后的截图默认截它）"
 
 
 def window_close(args: dict[str, Any]) -> str:
@@ -147,6 +171,9 @@ def window_close(args: dict[str, Any]) -> str:
             f"[ok] 已向 hwnd={target} 发送关闭请求，但窗口仍在。"
             "多半弹出了「是否保存」对话框，需要用户处理"
         )
+    current, _ = get_target()
+    if current == target:
+        clear_target()
     return f"[ok] 窗口 hwnd={target} 已关闭"
 
 

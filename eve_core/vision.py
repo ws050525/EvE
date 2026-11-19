@@ -129,10 +129,40 @@ def _virtual_origin() -> tuple[int, int]:
         return 0, 0
 
 
+def window_info(hwnd: int) -> tuple[str, tuple[int, int, int, int]] | None:
+    """指定窗口的 (标题, 矩形)。窗口不存在、最小化、太小都返回 None。"""
+    try:
+        user32 = ctypes.windll.user32
+        if not hwnd or not user32.IsWindow(ctypes.c_void_p(int(hwnd))):
+            return None
+        if user32.IsIconic(ctypes.c_void_p(int(hwnd))):
+            return None  # 最小化时截图是空的，退回前台窗口
+        length = int(user32.GetWindowTextLengthW(ctypes.c_void_p(int(hwnd))))
+        buffer = ctypes.create_unicode_buffer(length + 1)
+        user32.GetWindowTextW(ctypes.c_void_p(int(hwnd)), buffer, length + 1)
+        title = buffer.value or ""
+    except Exception:
+        return None
+    bounds = _rect_of(int(hwnd))
+    if bounds is None:
+        return None
+    left, top, right, bottom = bounds
+    if right - left < MIN_CROP or bottom - top < MIN_CROP:
+        return None
+    return title, (left, top, right, bottom)
+
+
 def capture(
-    path: Path | None = None, full_screen: bool = False, folder: Path | None = None
+    path: Path | None = None,
+    full_screen: bool = False,
+    folder: Path | None = None,
+    hwnd: int = 0,
 ) -> Shot:
-    """截一张图。默认只截**活动窗口**，拿不到窗口信息时退回全屏。"""
+    """截一张图。
+
+    默认截 `hwnd` 指定的窗口（agent 正在操作的那个），
+    没指定就截前台窗口；都拿不到才退回全屏。
+    """
     try:
         from PIL import ImageGrab
     except ImportError as exc:
@@ -143,21 +173,24 @@ def capture(
     origin = base_origin
     window_title = ""
 
-    if not full_screen:
-        found = foreground_window()
-        if found is not None:
-            _hwnd, title, (left, top, right, bottom) = found
-            box = (
-                max(0, left - base_origin[0]),
-                max(0, top - base_origin[1]),
-                min(image.width, right - base_origin[0]),
-                min(image.height, bottom - base_origin[1]),
-            )
-            if box[2] - box[0] >= MIN_CROP and box[3] - box[1] >= MIN_CROP:
-                image = image.crop(box)
-                # 裁出来的图，左上角对应的屏幕坐标
-                origin = (box[0] + base_origin[0], box[1] + base_origin[1])
-                window_title = title
+    found = None if full_screen else window_info(int(hwnd or 0))
+    if found is None and not full_screen:
+        foreground = foreground_window()  # (hwnd, title, rect)
+        if foreground is not None:
+            found = (foreground[1], foreground[2])
+    if found is not None:
+        title, (left, top, right, bottom) = found
+        box = (
+            max(0, left - base_origin[0]),
+            max(0, top - base_origin[1]),
+            min(image.width, right - base_origin[0]),
+            min(image.height, bottom - base_origin[1]),
+        )
+        if box[2] - box[0] >= MIN_CROP and box[3] - box[1] >= MIN_CROP:
+            image = image.crop(box)
+            # 裁出来的图，左上角对应的屏幕坐标
+            origin = (box[0] + base_origin[0], box[1] + base_origin[1])
+            window_title = title
 
     # 存原图，不在这里缩：缩了以后"图上的像素"就对不上屏幕像素，
     # locate() 算出的坐标会整体偏小（踩过：点哪儿都落在左上角一带）。

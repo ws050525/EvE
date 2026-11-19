@@ -1,4 +1,4 @@
-"""内置工具：启动程序、列开始菜单、截屏。
+﻿"""内置工具：启动程序、列开始菜单、截屏。
 
 `app_launch` 的查找顺序（v0.5.8 起）：
   别名表 → 直接路径 → **开始菜单** → PATH → 给出相近的名字
@@ -56,6 +56,16 @@ def _enum_windows() -> list[dict]:
     from .desktop import _enum_windows as impl
 
     return impl()
+
+
+def _remember(win: dict) -> None:
+    """把刚启动/激活的窗口记成"当前操作目标"，后续截图默认截它。"""
+    try:
+        from .desktop import set_target
+
+        set_target(int(win["hwnd"]), str(win.get("title") or ""))
+    except Exception:
+        pass
 
 
 def _force_foreground(hwnd: int) -> bool:
@@ -125,6 +135,7 @@ def _launch_executable(cmd: str, resolved: str | None = None, file_path: Path | 
     if file_path is None:
         running = _already_running(exe_name)
         if running is not None:
+            _remember(running)
             return (
                 f"[ok] {cmd} 已在运行，已激活现有窗口：{_clean(running['title'])!r}，"
                 f"hwnd={running['hwnd']}（没有重复启动）"
@@ -142,6 +153,7 @@ def _launch_executable(cmd: str, resolved: str | None = None, file_path: Path | 
     win = _wait_new_window(before)
     if win is None:
         return f"[ok] 已启动 {cmd}，但 {LAUNCH_TIMEOUT:.0f} 秒内没检测到新窗口（可能还在加载或已最小化）"
+    _remember(win)
     return (
         f"[ok] 已启动 {cmd}，窗口标题：{_clean(win['title'])!r}，hwnd={win['hwnd']}"
         f"{_window_note(win['title'])}。"
