@@ -138,8 +138,10 @@ class AppConfig:
     browser_port: int = 9333
     browser_binary: str = ""  # 留空自动找 Edge/Chrome
     browser_profile: str = ""  # 留空用 <work_root>/.tmp/browser-profile
-    # 视觉：桌面操作要"看"，但云端模型不收图，所以用本地 Qwen3-VL 当眼睛。
-    # 留空 = 自动挑第一个带 mmproj 的模型。
+    # 视觉走哪边：
+    #   cloud = 主模型自己看图（DeepSeek Flash 支持 input_modalities: text,image）
+    #   local = 本地 GGUF 视觉模型（离线后备）
+    vision_backend: str = "cloud"
     vision_model: str = ""
     # 视觉模型的坐标格式：auto（按模型名猜）/ general（JSON 像素）/ uitars（动作 + 0–1000 归一化）
     vision_format: str = "auto"
@@ -427,6 +429,7 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
         browser_profile=str(resolve(browser["profile"])) if browser.get("profile") else "",
         vision_model=str(vision_cfg.get("model") or ""),
         vision_format=str(vision_cfg.get("format") or "auto"),
+        vision_backend=str(vision_cfg.get("backend") or "cloud"),
         voice=voice,
     )
     return _apply_prefs(cfg)

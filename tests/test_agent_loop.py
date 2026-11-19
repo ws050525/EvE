@@ -132,6 +132,50 @@ def cancel_stops_before_the_next_tool_runs():
 
 
 @case
+def repeated_identical_actions_stop_the_loop():
+    """同一个动作连做三次就停：再走下去只会烧钱，不会成功。"""
+    import tempfile
+
+    from eve_core.provider import ChatResult, ToolCall
+
+    with tempfile.TemporaryDirectory() as tmp:
+        agent = _agent("work")
+        agent.cfg.data_dir = Path(tmp)
+
+        class RepeatingProvider:
+            name = "stub"
+            model = "stub"
+
+            def __init__(self):
+                self.calls = 0
+
+            def chat(self, messages, tools=None, *, max_tokens=512, temperature=0.7):
+                self.calls += 1
+                return ChatResult(
+                    content="",
+                    model="stub",
+                    tool_calls=[
+                        ToolCall(
+                            id=str(self.calls),
+                            name="todo_write",
+                            arguments={"items": [{"text": "卡住了", "status": "pending"}]},
+                        )
+                    ],
+                )
+
+        provider = RepeatingProvider()
+        agent._provider = provider
+        agent._provider_model_id = agent.model_id
+
+        out = agent.send("随便做点事")
+
+        assert "连续做了 3 次" in out, out
+        # 第三次只检测、不执行
+        assert provider.calls == 3, provider.calls
+        assert any(m["role"] == "tool" for m in agent.messages), "前两次动作应该真的执行过"
+
+
+@case
 def context_compaction_keeps_system_and_appends_summary():
     import tempfile
 

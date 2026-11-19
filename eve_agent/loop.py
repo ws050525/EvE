@@ -1,4 +1,4 @@
-"""Agent 主循环：会话、工具调用、步数上限、结构化日志。
+﻿"""Agent 主循环：会话、工具调用、步数上限、结构化日志。
 
 v0.4 起不再自己造 Provider，而是向 RuntimeManager 要：
 档位决定 system prompt 和工具集，模型决定用哪份算力，两者解耦。
@@ -32,7 +32,7 @@ from .tools.registry import ToolRegistry, build_default_registry
 
 MAX_STEPS_DEFAULT = 12  # 只有配置里拿不到时才用
 MIN_STEPS = 1
-MAX_STEPS_CAP = 60
+MAX_STEPS_CAP = 150
 
 # 自动预算的天花板：云端窗口再大也别一上来就塞满，那是真金白银
 AUTO_BUDGET_CAP = 24_000
@@ -53,7 +53,7 @@ class Agent:
         self.bus = bus or EventBus()
         self.runtime = runtime or RuntimeManager(cfg, on_event=self._emit_runtime)
         # 视觉工具要用 agent 自己的 runtime：本地视觉引擎只能起一个，不能各开各的
-        self.registry: ToolRegistry = build_default_registry(cfg, self.runtime)
+        self.registry: ToolRegistry = build_default_registry(cfg, self.runtime, lambda: self.provider)
         self.persona = Persona()
         self.usage = UsageTracker()
         self.mode_name = mode_name or cfg.default_mode
@@ -485,6 +485,10 @@ class Agent:
         # 罢工时不给工具：模型只能说话，不能动手
         schemas = self.registry.schemas(self.active_tools) if self.persona.allow_tools else []
 
+        # 鬼打墙检测：连着做同一个动作，说明它卡住了，再走也是白花钱
+        last_signature = None
+        repeats = 0
+
         for step in range(1, self._max_steps + 1):
             if self.cancelled:
                 self._save_checkpoint("cancelled", step, text)
@@ -555,6 +559,20 @@ class Agent:
             for call in result.tool_calls:
                 if self.cancelled:
                     break
+                signature = (call.name, json.dumps(call.arguments, sort_keys=True, ensure_ascii=False))
+                if signature == last_signature:
+                    repeats += 1
+                else:
+                    last_signature, repeats = signature, 1
+                if repeats >= 3:
+                    # 同一个动作连着做第三次：多半是上一步没生效、它在反复试
+                    self._save_checkpoint("stuck", step, text)
+                    self.bus.emit("stuck", step=step, tool=call.name)
+                    return (
+                        f"（同一个动作「{call.name}」连续做了 {repeats} 次，我先停下了——"
+                        "多半是那一步没生效、或者我看错界面了。"
+                        "进度已存档：告诉我该换个什么思路，或者点「继续」我会带着这条提醒重试）"
+                    )
                 self.bus.emit("tool_start", name=call.name, args=call.arguments)
                 output = self.registry.dispatch(
                     call.name,

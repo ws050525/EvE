@@ -104,7 +104,7 @@ class ToolRegistry:
             return f"[error] {type(exc).__name__}: {exc}"
 
 
-def build_default_registry(cfg=None, runtime=None) -> ToolRegistry:
+def build_default_registry(cfg=None, runtime=None, provider_getter=None) -> ToolRegistry:
     from .browser import register_browser
     from .builtin import register_builtin
     from .desktop import register_desktop
@@ -125,7 +125,7 @@ def build_default_registry(cfg=None, runtime=None) -> ToolRegistry:
     register_shared(registry, cfg)
     register_web(registry, cfg)
     register_browser(registry, cfg)
-    register_vision(registry, cfg, runtime)
+    register_vision(registry, cfg, runtime, provider_getter)
     register_workspace(registry, cfg)
     register_office(registry, cfg)
     register_shell(registry, cfg)

@@ -267,6 +267,133 @@ def _prepare(path: Path, max_side: int = MAX_SIDE) -> tuple[str, float, tuple[in
     return "data:image/jpeg;base64," + encoded, scale, (image.width, image.height)
 
 
+# ---------------------------------------------------------------------------
+# 云端视觉：主模型本身就能看图时，直接问它，不用另起引擎
+# ---------------------------------------------------------------------------
+
+GRID_COLS = 3
+GRID_ROWS = 3
+FAST = {"thinking": {"type": "disabled"}, "effort": "low"}  # 找东西不需要深度思考
+
+
+def _encode(image, quality: int = 88) -> str:
+    buffer = io.BytesIO()
+    image.save(buffer, format="JPEG", quality=quality)
+    return "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
+
+
+def _chat_vision(provider, data_url: str, question: str, max_tokens: int = 200) -> str:
+    """把一张图 + 一个问题发给云端模型。参数不被支持时退回只有图的那版。"""
+    messages = [
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": question},
+                {"type": "image_url", "image_url": {"url": data_url}},
+            ],
+        }
+    ]
+    try:
+        result = provider.chat(messages, None, max_tokens=max_tokens, temperature=0.0, extra=FAST)
+    except Exception:
+        # 有的服务不认 thinking/effort，去掉重试一次
+        result = provider.chat(messages, None, max_tokens=max_tokens, temperature=0.0)
+    return (result.content or "").strip()
+
+
+def cloud_ask(provider, shot, question: str, max_tokens: int = 400) -> str:
+    """直接让云端模型回答一个关于截图的问题。`shot` 可以是 Shot 或路径。"""
+    from PIL import Image
+
+    path = shot.path if isinstance(shot, Shot) else Path(shot)
+    image, _scale = _fit(Image.open(path).convert("RGB"))
+    return _chat_vision(provider, _encode(image), question, max_tokens=max_tokens)
+
+
+def _draw_grid(image, cols: int = GRID_COLS, rows: int = GRID_ROWS):
+    from PIL import ImageDraw
+
+    marked = image.copy()
+    draw = ImageDraw.Draw(marked)
+    width, height = image.width / cols, image.height / rows
+    for row in range(rows):
+        for col in range(cols):
+            x0, y0 = col * width, row * height
+            draw.rectangle([x0, y0, x0 + width - 1, y0 + height - 1], outline=(255, 0, 255), width=3)
+            draw.text((x0 + 8, y0 + 6), str(row * cols + col + 1), fill=(255, 0, 255))
+    return marked
+
+
+def _ask_cell(provider, image, target: str, cols: int = GRID_COLS, rows: int = GRID_ROWS) -> tuple[int, int] | None:
+    """让模型说目标落在第几格，返回 (row, col)。分类比回归可靠得多。"""
+    question = (
+        f"图被 {cols}x{rows} 网格切成 1-{cols * rows}（1 左上、{cols} 右上、"
+        f"{cols * (rows - 1) + 1} 左下、{cols * rows} 右下）。"
+        f"「{target}」的中心在哪个格子？只输出一行：答案=N"
+    )
+    answer = _chat_vision(provider, _encode(_draw_grid(image, cols, rows)), question, max_tokens=30)
+    numbers = re.findall(r"[1-9]", answer)
+    if not numbers:
+        return None
+    cell = int(numbers[-1])
+    if not 1 <= cell <= cols * rows:
+        return None
+    return (cell - 1) // cols, (cell - 1) % cols
+
+
+def locate_grid(provider, shot, target: str, levels: int = 1) -> dict:
+    """九宫格定位：先大格、再逐级细化，返回**屏幕坐标**的矩形和中心点。
+
+    为什么不直接问像素坐标：实测云端模型给的 y 会超出图高（1082,929 之于 800 高的图），
+    而"选哪一格"这种分类问题它答得又快又准（3/3、1.2–1.9 秒、3 个输出 token）。
+    """
+    from PIL import Image
+
+    path = shot.path if isinstance(shot, Shot) else Path(shot)
+    origin = shot.origin if isinstance(shot, Shot) else (0, 0)
+    image, scale = _fit(Image.open(path).convert("RGB"))
+
+    box = (0, 0, image.width, image.height)
+    cell_rect = box
+    for level in range(max(1, levels)):
+        crop = image.crop(box)
+        cell = _ask_cell(provider, crop, target)
+        if cell is None:
+            return {"found": False, "why": "模型没给出格子", "target": target}
+        row, col = cell
+        # 最后一级就停在这一格；中间级往外扩 45%，避免目标被切在边界上
+        margin = 0.45 if level < levels - 1 else 0.0
+        width, height = crop.width / GRID_COLS, crop.height / GRID_ROWS
+        left = max(0, int(box[0] + col * width - margin * width))
+        top = max(0, int(box[1] + row * height - margin * height))
+        right = min(image.width, int(box[0] + (col + 1) * width + margin * width))
+        bottom = min(image.height, int(box[1] + (row + 1) * height + margin * height))
+        box = (left, top, right, bottom)
+        cell_rect = box
+
+    # 缩放后的图 → 截图原像素 → 屏幕坐标
+    def to_screen(value: float, offset: int) -> int:
+        return int(round(value / scale + offset))
+
+    left, top, right, bottom = cell_rect
+    screen = (
+        to_screen(left, origin[0]),
+        to_screen(top, origin[1]),
+        to_screen(right, origin[0]),
+        to_screen(bottom, origin[1]),
+    )
+    return {
+        "found": True,
+        "target": target,
+        "rect": screen,
+        "x": (screen[0] + screen[2]) // 2,
+        "y": (screen[1] + screen[3]) // 2,
+        "width": screen[2] - screen[0],
+        "height": screen[3] - screen[1],
+        "levels": levels,
+    }
+
+
 def ask(
     runtime,
     cfg,

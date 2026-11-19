@@ -281,6 +281,85 @@ def capture_keeps_full_resolution():
     assert shot.origin == (0, 0), shot.origin
 
 
+@case
+def grid_locate_maps_the_cell_back_to_screen_coordinates():
+    """九宫格返回的是格子矩形；缩放和裁剪原点都要还原回去。"""
+    from PIL import Image
+
+    from eve_core import vision
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "shot.png"
+        Image.new("RGB", (900, 600), "black").save(path)  # 540k 像素，不会触发缩放
+
+        class CellProvider:
+            def chat(self, messages, tools=None, **kwargs):
+                return SimpleNamespace(content="答案=8")  # 第 8 格 = 下中
+
+        shot = vision.Shot(path=path, origin=(100, 200), size=(900, 600), window="窗口")
+        hit = vision.locate_grid(CellProvider(), shot, "输入框", levels=1)
+
+        assert hit["found"] is True, hit
+        # 900x600 三等分：第 8 格 x 300–600、y 400–600，再加原点
+        assert hit["rect"] == (400, 600, 700, 800), hit["rect"]
+        assert (hit["x"], hit["y"]) == (550, 700), hit
+
+
+@case
+def grid_locate_reports_when_the_model_answers_nothing():
+    from PIL import Image
+
+    from eve_core import vision
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "shot.png"
+        Image.new("RGB", (300, 300), "black").save(path)
+
+        class SilentProvider:
+            def chat(self, messages, tools=None, **kwargs):
+                return SimpleNamespace(content="我看不出来")
+
+        shot = vision.Shot(path=path, origin=(0, 0), size=(300, 300), window="")
+        hit = vision.locate_grid(SilentProvider(), shot, "按钮", levels=1)
+        assert hit["found"] is False and hit.get("why"), hit
+
+
+@case
+def cloud_ask_retries_without_fast_params():
+    """有的服务不认 thinking/effort：第一次报错时要能退回去重试。"""
+    from PIL import Image
+
+    from eve_core import vision
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = Path(tmp) / "shot.png"
+        Image.new("RGB", (200, 100), "white").save(path)
+
+        class PickyProvider:
+            def __init__(self):
+                self.attempts = 0
+
+            def chat(self, messages, tools=None, **kwargs):
+                self.attempts += 1
+                if kwargs.get("extra"):
+                    raise TypeError("不支持的参数")
+                return SimpleNamespace(content="看到了一个白框")
+
+        provider = PickyProvider()
+        answer = vision.cloud_ask(provider, path, "图里有什么？")
+        assert answer == "看到了一个白框", answer
+        assert provider.attempts == 2, provider.attempts
+
+
+@case
+def vision_tools_degrade_gracefully():
+    from eve_agent.tools.vision_tools import _screen_locate, _screen_read
+
+    # 没有 provider、也没有 runtime：要给清楚的话，不能崩
+    assert _screen_locate({"target": "x"}, None, None).startswith("[error]")
+    assert _screen_read({"question": "x"}, None, None).startswith("[error]")
+
+
 def main() -> int:
     failed = 0
     for fn in CHECKS:

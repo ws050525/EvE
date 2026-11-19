@@ -68,6 +68,7 @@ class OpenAICompatProvider:
         *,
         max_tokens: int = 512,
         temperature: float = 0.7,
+        extra: dict[str, Any] | None = None,
     ) -> ChatResult:
         payload: dict[str, Any] = {
             "model": self.model,
@@ -78,6 +79,10 @@ class OpenAICompatProvider:
         if tools:
             payload["tools"] = tools
             payload["tool_choice"] = "auto"
+        if extra:
+            # 例如 {"thinking": {"type": "disabled"}, "effort": "low"}：
+            # 看图定位这种活儿不需要长时间思考，关掉能快 3 倍
+            payload.update(extra)
 
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         req = urllib.request.Request(
