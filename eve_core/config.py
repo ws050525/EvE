@@ -1,4 +1,4 @@
-"""配置加载。
+﻿"""配置加载。
 
 v0.4 起，"模型"是一等公民：
 - `[models.*]` 声明有哪些模型（本地 GGUF 或云端 API）
@@ -142,6 +142,8 @@ class AppConfig:
     #   cloud = 主模型自己看图（DeepSeek Flash 支持 input_modalities: text,image）
     #   local = 本地 GGUF 视觉模型（离线后备）
     vision_backend: str = "cloud"
+    # 语义动作记忆：做过一遍的操作存成意图，下次直接回放（省掉整条思考链）
+    macro_enabled: bool = True
     vision_model: str = ""
     # 视觉模型的坐标格式：auto（按模型名猜）/ general（JSON 像素）/ uitars（动作 + 0–1000 归一化）
     vision_format: str = "auto"
@@ -430,6 +432,7 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
         vision_model=str(vision_cfg.get("model") or ""),
         vision_format=str(vision_cfg.get("format") or "auto"),
         vision_backend=str(vision_cfg.get("backend") or "cloud"),
+        macro_enabled=bool(app.get("macro_enabled", True)),
         voice=voice,
     )
     return _apply_prefs(cfg)

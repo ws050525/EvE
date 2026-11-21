@@ -1,4 +1,4 @@
-"""工具注册表。
+﻿"""工具注册表。
 
 一个工具 = 名字 + 给模型看的 JSON Schema + 真正执行的函数 + 风险等级。
 风险等级决定要不要向用户确认；`require_confirm` 在档位上是总开关。
@@ -108,6 +108,7 @@ def build_default_registry(cfg=None, runtime=None, provider_getter=None) -> Tool
     from .browser import register_browser
     from .builtin import register_builtin
     from .desktop import register_desktop
+    from .macro_tools import register_macros
     from .office import register_office
     from .planning import register_planning
     from .project import register_project
@@ -123,6 +124,7 @@ def build_default_registry(cfg=None, runtime=None, provider_getter=None) -> Tool
     register_planning(registry, cfg)
     register_project(registry, cfg)
     register_shared(registry, cfg)
+    register_macros(registry, cfg)
     register_web(registry, cfg)
     register_browser(registry, cfg)
     register_vision(registry, cfg, runtime, provider_getter)

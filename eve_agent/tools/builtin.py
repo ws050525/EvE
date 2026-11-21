@@ -95,17 +95,34 @@ def _wait_new_window(before: set, timeout: float = LAUNCH_TIMEOUT) -> dict | Non
 
 
 def _already_running(exe_name: str) -> dict | None:
-    """同一个 exe 已经在跑，就别再开一个实例。"""
+    """同一个 exe 已经在跑，就别再开一个实例。
+
+    同一个进程会有好几个窗口（主窗、系统提示、小弹窗），**要挑最大的那个**——
+    拿错窗口的话，后面的截图和点击全都会落在一个 500 像素的小浮层上（踩过）。
+    """
     if not exe_name:
         return None
+    best = None
+    best_area = 0
     for win in _enum_windows():
         try:
             running = os.path.basename(_pid_exe(win["pid"])).lower()
         except Exception:
             continue
-        if running and running == exe_name:
-            if _force_foreground(win["hwnd"]):
-                return win
+        if not running or running != exe_name:
+            continue
+        try:
+            rect = wt.RECT()
+            user32.GetWindowRect(win["hwnd"], ctypes.byref(rect))
+            area = max(0, rect.right - rect.left) * max(0, rect.bottom - rect.top)
+        except Exception:
+            area = 0
+        if area > best_area:
+            best, best_area = win, area
+    if best is not None:
+        # 置前是"尽力而为"：系统可能拒绝，但窗口仍然是我们该操作的那个
+        _force_foreground(best["hwnd"])
+        return best
     return None
 
 
@@ -152,7 +169,10 @@ def _launch_executable(cmd: str, resolved: str | None = None, file_path: Path | 
 
     win = _wait_new_window(before)
     if win is None:
-        return f"[ok] 已启动 {cmd}，但 {LAUNCH_TIMEOUT:.0f} 秒内没检测到新窗口（可能还在加载或已最小化）"
+        # 已经开着的应用再"启动"一次不会产生新窗口：按进程名再找一遍
+        win = _already_running(exe_name)
+        if win is None:
+            return f"[ok] 已启动 {cmd}，但 {LAUNCH_TIMEOUT:.0f} 秒内没检测到新窗口（可能还在加载或已最小化）"
     _remember(win)
     return (
         f"[ok] 已启动 {cmd}，窗口标题：{_clean(win['title'])!r}，hwnd={win['hwnd']}"

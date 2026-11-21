@@ -1,4 +1,4 @@
-﻿"""Agent 主循环：会话、工具调用、步数上限、结构化日志。
+"""Agent 主循环：会话、工具调用、步数上限、结构化日志。
 
 v0.4 起不再自己造 Provider，而是向 RuntimeManager 要：
 档位决定 system prompt 和工具集，模型决定用哪份算力，两者解耦。
@@ -19,6 +19,7 @@ from eve_core.runtime import RuntimeManager
 from eve_core.usage import UsageTracker
 
 from . import checkpoint as checkpoints
+from . import macros as macro_mem
 from . import shared
 from .checkpoint import TaskCheckpoint
 from .context import (
@@ -56,6 +57,8 @@ class Agent:
         self.registry: ToolRegistry = build_default_registry(cfg, self.runtime, lambda: self.provider)
         self.persona = Persona()
         self.usage = UsageTracker()
+        self.macros = macro_mem.MacroStore(cfg.data_dir)
+        self.macro_enabled = bool(getattr(cfg, "macro_enabled", True))
         self.mode_name = mode_name or cfg.default_mode
         self.mode: ModeConfig
         self.messages: list[dict[str, Any]] = []
@@ -460,6 +463,60 @@ class Agent:
         )
         return final
 
+    # ---------- 语义动作回放（省步数的快路）----------
+
+    def _try_macro(self, text: str, confirm: ConfirmFn | None) -> str | None:
+        """命中记忆就整条回放，一个模型 token 都不花。没命中/回放失败返回 None。"""
+        if not self.macro_enabled or not self.active_tools:
+            return None
+        # 不在这里卡"是否完全权限"：确认策略交给 dispatch，
+        # 用户点了拒绝会返回 [denied]，回放自然失败并交回给模型
+        macro, _score = self.macros.match(text)
+        if macro is None:
+            return None
+
+        def dispatch(name: str, args: dict[str, Any]) -> str:
+            return self.registry.dispatch(
+                name,
+                args,
+                allowed=set(self.active_tools),
+                confirm=confirm,
+                require_confirm=self.mode.require_confirm,
+                auto_ok=True,
+            )
+
+        def log(step, out: str) -> None:
+            self._log_action(f"macro:{step.do}", {"target": step.target or step.app or step.keys}, out)
+            self.bus.emit(
+                "tool_end", name=f"翻记忆·{step.describe()}", ok=not out.startswith("[error]"), result=out[:120]
+            )
+
+        values = macro_mem.fill_slots(macro, text)
+        if macro.patterns and not values:
+            # 这条记忆要靠参数（比如歌名），但这句里没抽到，别硬放
+            self.bus.emit("macro_miss", name=macro.name, detail="没抽到参数")
+            return None
+
+        ok, lines = macro_mem.replay(
+            macro, dispatch, set(self.active_tools), log=log, values=values
+        )
+        self.macros.record_hit(macro, ok)
+        if not ok:
+            self.bus.emit("macro_miss", name=macro.name, detail=lines[-1] if lines else "")
+            return None
+
+        verified = ""
+        if macro.verify:
+            probe = dispatch("screen_read", {"question": macro.verify})
+            self._log_action("screen_read", {"question": macro.verify}, probe)
+            verified = (probe or "").splitlines()[-1][:120]
+
+        chain = "\n".join(f"  {index}. {line}" for index, line in enumerate(lines, 1))
+        tail = f"\n验证：{verified}" if verified else ""
+        return (
+            f"（按记忆直接执行「{macro.name}」，{len(lines)} 步全部成功，没有调用模型）\n{chain}{tail}"
+        )
+
     # ---------- 主循环 ----------
 
     def send(self, text: str, confirm: ConfirmFn | None = None) -> str:
@@ -484,6 +541,22 @@ class Agent:
 
         # 罢工时不给工具：模型只能说话，不能动手
         schemas = self.registry.schemas(self.active_tools) if self.persona.allow_tools else []
+
+        # 语义动作记忆：这套操作做过，直接回放，一次模型调用都不花
+        replayed = self._try_macro(text, confirm)
+        if replayed is not None:
+            self.messages.append({"role": "assistant", "content": replayed})
+            self.bus.emit(
+                "reply_done",
+                text=replayed,
+                latency_ms=0,
+                usage={},
+                cost=0.0,
+                session_cost=self.usage.session_cost,
+                free=True,
+                model="macro-replay",
+            )
+            return replayed
 
         # 鬼打墙检测：连着做同一个动作，说明它卡住了，再走也是白花钱
         last_signature = None
