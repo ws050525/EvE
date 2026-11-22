@@ -93,6 +93,27 @@ def urls_lose_protocol_and_say_three_w():
     assert "三w" not in clean_for_speech("只有一个 w 的 ws 不算")
 
 
+
+@case
+def speech_cleaning_never_touches_display_text():
+    """播报用的清洗只能作用在"要念的文本"上，界面显示必须原样。
+
+    用户明确要求：聊天里显示 `www.baidu.com`，只有念的时候说"三w"。
+    这条测试扫源码，确保 clean_for_speech 只在语音合成模块里被调用。
+    """
+    root = Path(__file__).resolve().parents[1]
+    allowed = {"eve_core/tts.py", "eve_core/tts_cosy.py"}
+    offenders = []
+    for path in list((root / "eve_ui").glob("*.py")) + list((root / "eve_agent").rglob("*.py")):
+        rel = path.relative_to(root).as_posix()
+        if rel in allowed:
+            continue
+        text = path.read_text(encoding="utf-8")
+        if "clean_for_speech" in text:
+            offenders.append(rel)
+    assert not offenders, f"这些地方不该调用播报清洗：{offenders}"
+
+
 def main() -> int:
     failed = 0
     for fn in CHECKS:
