@@ -6,7 +6,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from eve_agent.macros import MIN_SCORE, MacroStore, replay
+from eve_agent.macros import MIN_SCORE, MacroStore, fill_slots, replay
 
 CHECKS = []
 
@@ -144,6 +144,36 @@ def hits_are_counted():
         store.record_hit(macro, False)
         assert macro.hits == 2, macro.hits
         assert macro.last_ok, "成功过一次就该记时间"
+
+
+@case
+def compound_task_is_not_hijacked():
+    """一串任务（然后/接着/最后…）不能被单条记忆吃掉——实测抢过一次。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        store = MacroStore(Path(tmp))
+        store.add("网易云搜歌", ["网易云", "搜歌"], STEPS)
+
+        assert store.match("用网易云搜歌，歌名《晴天》")[0] is not None
+        for text in (
+            "先在网易云搜歌，然后打开抖音搜同名，最后写进文件",
+            "帮我做三件事：第一网易云搜歌，第二抖音，第三写文件",
+            "先搜歌，接着播放，最后截图",
+        ):
+            assert store.match(text)[0] is None, text
+
+
+@case
+def slots_reject_values_that_do_not_look_like_parameters():
+    """抽到整段指令（带路径、标点）时宁可不要，也不能拿去输入。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        store = MacroStore(Path(tmp))
+        macro = store.add("搜歌", ["搜歌"], STEPS, patterns=["歌名[：:是为]?\\s*(.+?)$"])
+
+        good = store.add("搜歌2", ["搜歌2"], STEPS, patterns=["《(.+?)》"])
+        assert store is not None
+        assert fill_slots(good, "搜《晴天》") == {"1": "晴天"}
+        bad = fill_slots(macro, "歌名；最后把歌名写进 D:\\1\\EVE\\.tmp\\a.txt，先列出计划")
+        assert bad == {}, bad
 
 
 def main() -> int:

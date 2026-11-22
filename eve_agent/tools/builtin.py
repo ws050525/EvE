@@ -90,7 +90,19 @@ def _wait_new_window(before: set, timeout: float = LAUNCH_TIMEOUT) -> dict | Non
             # 记事本：'记事本' -> '无标题 - Notepad'，稍等再读，否则交给模型的是过期标题
             time.sleep(0.6)
             refreshed = {w["hwnd"]: w for w in _enum_windows()}
-            return refreshed.get(fresh[0]["hwnd"], fresh[0])
+            livelist = [refreshed[w["hwnd"]] for w in fresh if w["hwnd"] in refreshed]
+            if livelist:
+                # 启动瞬间常有个闪屏/加载窗，取面积最大的那个才是主窗
+                def area(win: dict) -> int:
+                    try:
+                        rect = wt.RECT()
+                        user32.GetWindowRect(win["hwnd"], ctypes.byref(rect))
+                        return max(0, rect.right - rect.left) * max(0, rect.bottom - rect.top)
+                    except Exception:
+                        return 0
+
+                return max(livelist, key=area)
+            return fresh[0]
     return None
 
 
