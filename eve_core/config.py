@@ -142,6 +142,8 @@ class AppConfig:
     #   cloud = 主模型自己看图（DeepSeek Flash 支持 input_modalities: text,image）
     #   local = 本地 GGUF 视觉模型（离线后备）
     vision_backend: str = "cloud"
+    # 灵魂文件：用户手写的长期偏好 + 简写约定，每次拼在 system prompt 最前面
+    soul_file: str = "soul/SOUL.md"
     # 语义动作记忆：做过一遍的操作存成意图，下次直接回放（省掉整条思考链）
     macro_enabled: bool = True
     vision_model: str = ""
@@ -432,6 +434,7 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
         vision_model=str(vision_cfg.get("model") or ""),
         vision_format=str(vision_cfg.get("format") or "auto"),
         vision_backend=str(vision_cfg.get("backend") or "cloud"),
+        soul_file=str(app.get("soul_file") or "soul/SOUL.md"),
         macro_enabled=bool(app.get("macro_enabled", True)),
         voice=voice,
     )

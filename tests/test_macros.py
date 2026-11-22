@@ -176,6 +176,20 @@ def slots_reject_values_that_do_not_look_like_parameters():
         assert bad == {}, bad
 
 
+@case
+def short_commands_still_match():
+    """「搜下稻香」这种短指令，关键词只有两个字，但意图明确，应该命中。"""
+    with tempfile.TemporaryDirectory() as tmp:
+        store = MacroStore(Path(tmp))
+        store.add("网易云搜歌", ["网易云", "搜歌", "搜下"], STEPS)
+
+        hit, _score = store.match("搜下稻香")
+        assert hit is not None and hit.name == "网易云搜歌", hit
+
+        # 但长句/复合任务仍然不抢
+        assert store.match("先搜下稻香，然后打开抖音，最后写文件")[0] is None
+
+
 def main() -> int:
     failed = 0
     for fn in CHECKS:

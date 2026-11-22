@@ -113,6 +113,7 @@ def build_default_registry(cfg=None, runtime=None, provider_getter=None) -> Tool
     from .planning import register_planning
     from .project import register_project
     from .shell import register_shell
+    from .soul_tools import register_soul
     from .shared_tools import register_shared
     from .vision_tools import register_vision
     from .web import register_web
@@ -125,6 +126,7 @@ def build_default_registry(cfg=None, runtime=None, provider_getter=None) -> Tool
     register_project(registry, cfg)
     register_shared(registry, cfg)
     register_macros(registry, cfg)
+    register_soul(registry, cfg)
     register_web(registry, cfg)
     register_browser(registry, cfg)
     register_vision(registry, cfg, runtime, provider_getter)

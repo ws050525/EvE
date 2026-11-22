@@ -183,6 +183,9 @@ def context_compaction_keeps_system_and_appends_summary():
         agent = _agent("chat")
         # 共享黑板会拼进 prompt：用临时目录，别让真实的 .data/shared.json 影响预算
         agent.cfg.data_dir = Path(tmp)
+        # 灵魂文件也会拼进 prompt：同样隔离掉，否则预算算不准
+        agent.soul.path = Path(tmp) / "no-soul.md"
+        agent.soul.learned_path = Path(tmp) / "no-learned.md"
         from eve_agent import shared
 
         shared._BOARD = None

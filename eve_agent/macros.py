@@ -189,7 +189,11 @@ class MacroStore:
             score = sum(len(k) for k in macro.keywords if k and k in text)
             if score > best_score:
                 best, best_score = macro, score
-        if best is None or best_score < MIN_SCORE:
+        if best is None:
+            return None, 0
+        # 短指令（"搜下稻香"）关键词只有两个字，但意图很明确：短句里命中一个就算
+        short_and_clear = len(text) <= 12 and best_score > 0
+        if not short_and_clear and best_score < MIN_SCORE:
             return None, best_score
         return best, best_score
 

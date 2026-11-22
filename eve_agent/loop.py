@@ -29,6 +29,7 @@ from .context import (
     messages_tokens,
 )
 from .persona import Persona
+from .soul import Soul
 from .tools.registry import ToolRegistry, build_default_registry
 
 MAX_STEPS_DEFAULT = 12  # 只有配置里拿不到时才用
@@ -57,6 +58,7 @@ class Agent:
         self.registry: ToolRegistry = build_default_registry(cfg, self.runtime, lambda: self.provider)
         self.persona = Persona()
         self.usage = UsageTracker()
+        self.soul = Soul(cfg)
         self.macros = macro_mem.MacroStore(cfg.data_dir)
         self.macro_enabled = bool(getattr(cfg, "macro_enabled", True))
         self.mode_name = mode_name or cfg.default_mode
@@ -258,26 +260,33 @@ class Agent:
 
     def _outgoing(self) -> list[dict[str, Any]]:
         """把人格状态、历史摘要、共享笔记临时拼进 system prompt，不改动会话本身。"""
-        extra = self.persona.prompt_extra()
         summary = getattr(self, "_summary", "")
-        # 黑板按预算缩放：小预算时少放几条，别把上下文挤爆
+        # 黑板和灵魂都按预算缩放：小预算时少放点，别把上下文挤爆
         budget = self.context_policy.max_prompt_tokens
+        # 灵魂文件排最前：和档位说明冲突时，以用户手写的偏好为准
+        soul_block = self.soul.prompt_block(chars=max(400, min(1400, budget // 16)))
         shared_block = shared.board_for(self.cfg.data_dir).prompt_block(
             limit=max(1, min(6, budget // 400)),
             chars=max(100, min(600, budget // 8)),
         )
-        head = "\n\n".join(
+        tail = "\n\n".join(
             part
             for part in (
-                extra,
+                self.persona.prompt_extra(),
                 f"## 先前对话摘要\n{summary}" if summary else "",
                 shared_block,
             )
             if part
         )
         out = list(self.messages)
-        if head and out and out[0].get("role") == "system":
-            out[0] = {"role": "system", "content": out[0]["content"] + "\n\n" + head}
+        if out and out[0].get("role") == "system":
+            # 灵魂文件放最前面（提示词里也是这么说的），其余附加信息放最后
+            content = out[0]["content"]
+            if soul_block:
+                content = soul_block + "\n\n" + content
+            if tail:
+                content = content + "\n\n" + tail
+            out[0] = {"role": "system", "content": content}
         return out
 
     # ---------- 上下文预算 ----------
