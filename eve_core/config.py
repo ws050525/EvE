@@ -360,6 +360,11 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
         tts_backend=str(voice_raw.get("tts_backend", VoiceSettings.tts_backend)),
         cosy_model=str(resolve(voice_raw.get("cosy_model", VoiceSettings.cosy_model))),
         cosy_voice=str(voice_raw.get("cosy_voice", VoiceSettings.cosy_voice)),
+        cosy_mode=str(voice_raw.get("cosy_mode", VoiceSettings.cosy_mode)),
+        cosy_ref_wav=(
+            str(resolve(voice_raw["cosy_ref_wav"])) if voice_raw.get("cosy_ref_wav") else ""
+        ),
+        cosy_ref_text=str(voice_raw.get("cosy_ref_text", VoiceSettings.cosy_ref_text)),
         asr_model=str(resolve(voice_raw.get("asr_model", VoiceSettings.asr_model))),
         asr_fallbacks=asr_fallbacks,
         kws_model=str(resolve(voice_raw.get("kws_model", VoiceSettings.kws_model))),

@@ -67,6 +67,9 @@ class TtsWorker(QObject):
                 self._settings.cosy_model,
                 speed=self._settings.speed,
                 speaker=self._settings.cosy_voice,
+                mode=getattr(self._settings, "cosy_mode", "auto"),
+                ref_wav=getattr(self._settings, "cosy_ref_wav", ""),
+                ref_text=getattr(self._settings, "cosy_ref_text", ""),
                 volume=self._settings.volume,
                 fx=VoiceFx(
                     enabled=self._settings.fx,

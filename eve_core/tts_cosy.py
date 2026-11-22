@@ -82,6 +82,8 @@ class CosyVoiceTts:
         self.model_dir = Path(model_dir)
         self.speed = max(0.5, min(2.0, float(speed)))
         self.speaker = str(speaker or DEFAULT_SPEAKER)
+        # 用户主动给了参考音频 = 想复刻；没给才用预置音色
+        self._ref_explicit = bool(ref_wav)
         self.ref_wav = Path(ref_wav) if ref_wav else DEFAULT_REF_WAV
         self.ref_text = (ref_text or DEFAULT_REF_TEXT).strip()
         self.mode = (mode or "auto").lower()  # auto / sft / zero_shot
@@ -155,6 +157,9 @@ class CosyVoiceTts:
             return True
         if self.mode == "sft":
             return False
+        # auto：显式给了参考音频就复刻，否则看模型有没有这个预置音色
+        if self._ref_explicit and self.ref_wav.exists():
+            return True
         speakers = getattr(getattr(self._model, "frontend", None), "spk2info", {}) or {}
         return str(self.speaker) not in speakers
 

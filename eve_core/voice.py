@@ -168,8 +168,12 @@ class VoiceSettings:
     # 播报
     # backend: vits（sherpa-onnx，快省资源）/ cosyvoice（CosyVoice2，更自然，吃显存）
     tts_backend: str = "vits"
-    cosy_model: str = "models/CosyVoice2-0.5B"
+    cosy_model: str = "models/CosyVoice3-300M-SFT"
     cosy_voice: str = "中文女"
+    # 声音复刻：给一段 5–10 秒的干净人声 + 它对应的文字，就能"学"成那个音色（本地，不联网）
+    cosy_mode: str = "auto"      # auto / sft（用预置音色）/ zero_shot（复刻）
+    cosy_ref_wav: str = ""       # 参考音频路径
+    cosy_ref_text: str = ""      # 参考音频里说的那句话
     tts_model: str = "models/voice/vits-zh-hf-eula"
     tts_speed: float = 1.0
     tts_speaker: int = 0

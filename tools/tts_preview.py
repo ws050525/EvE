@@ -106,6 +106,8 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="tts_preview", description="播报参数试听")
     parser.add_argument("--out", default=str(ROOT / ".tmp" / "preview"), help="输出目录")
     parser.add_argument("--play", action="store_true", help="渲染完逐个播放")
+    parser.add_argument("--ref-wav", default="", help="复刻用的参考音频（5–10 秒干净人声）")
+    parser.add_argument("--ref-text", default="", help="参考音频里说的那句话")
     parser.add_argument(
         "--backend",
         default="",
@@ -124,6 +126,9 @@ def main(argv: list[str] | None = None) -> int:
             voice.cosy_model,
             speed=voice.tts_speed,
             speaker=voice.cosy_voice,
+            mode=("zero_shot" if args.ref_wav else getattr(voice, "cosy_mode", "auto")),
+            ref_wav=args.ref_wav or getattr(voice, "cosy_ref_wav", ""),
+            ref_text=args.ref_text or getattr(voice, "cosy_ref_text", ""),
             volume=voice.tts_volume,
             fx=VoiceFx(enabled=voice.tts_fx),
         )
