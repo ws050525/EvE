@@ -54,6 +54,7 @@ def _speak_domain(match: "re.Match") -> str:
 
     - `www` → **三w**（三个 w 连在一起就是"三w"，中文里没人念"达不溜达不溜达不溜"）
     - 域名里的数字逐位念：`163.com` → 一六三点com
+    - 点念出来：`baidu.com` → `baidu点com`
     - 路径和查询串不念（`/search?q=天气` 念出来全是噪音）
     """
     text = match.group(0)
@@ -61,7 +62,9 @@ def _speak_domain(match: "re.Match") -> str:
     text = re.sub(r"(?i)w{3,}", "三w", text)
     from .numbers import digits_to_zh
 
-    return re.sub(r"\d+", lambda m: digits_to_zh(m.group(0)), text)
+    text = re.sub(r"\d+", lambda m: digits_to_zh(m.group(0)), text)
+    # 点要念出来：不念的话"三w baidu com"听起来像三个不相干的词
+    return text.replace(".", "点")
 
 
 _FILENAME = re.compile(
