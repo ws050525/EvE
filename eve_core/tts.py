@@ -12,6 +12,8 @@ edge-tts 走微软免费端点，实测 403 被挡；本地合成稳定、不联
 
 from __future__ import annotations
 
+from .numbers import normalize_numbers
+
 import math
 import queue
 import re
@@ -33,6 +35,12 @@ _DECOR = re.compile(r"[～~【】「」『』《》※•·^|<>]")
 # 现在只防病态输入（几千字的整篇文档），正常回复一律念完：真正控制节奏的是
 # 下面的逐句切分，不是把文本截短。
 MAX_SPEECH_CHARS = 3000
+
+
+_FILENAME = re.compile(
+    r"[A-Za-z0-9_\-]+\.(?:xlsx|docx|pptx|txt|py|json|md|png|jpe?g|pdf|csv|mp3|mp4|wav|zip|exe|html?)\b",
+    re.I,
+)
 
 
 def clean_for_speech(text: str) -> str:
@@ -59,6 +67,10 @@ def clean_for_speech(text: str) -> str:
     text = re.sub(r"。{2,}", "。", text)
     text = re.sub(r"[，。]{2,}", "，", text)
     text = text.strip("，。 ")
+    # 文件名不念（"report_2026.xlsx" 会念成一串英文加数字），换成"文件"
+    text = _FILENAME.sub("文件", text)
+    # 阿拉伯数字转中文读法：CosyVoice 的文本前端没装，123 会被念成英文
+    text = normalize_numbers(text)
 
     if len(text) > MAX_SPEECH_CHARS:
         cut = text[:MAX_SPEECH_CHARS]
