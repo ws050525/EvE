@@ -67,7 +67,10 @@ class MessageRow(QWidget):
 
         self.bubble = QLabel(text, self)
         self.bubble.setWordWrap(True)
-        self.bubble.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        self.bubble.setTextInteractionFlags(
+            Qt.TextSelectableByMouse | Qt.LinksAccessibleByMouse
+        )
+        self.bubble.setOpenExternalLinks(True)  # 点链接直接用系统浏览器打开
         self.bubble.setMaximumWidth(MAX_BUBBLE)
         self.bubble.setStyleSheet(self._bubble_qss(role))
 
@@ -103,7 +106,15 @@ class MessageRow(QWidget):
         )
 
     def set_text(self, text: str) -> None:
-        self.bubble.setText(text)
+        # 文本照原样显示；带网址时才转成富文本，让链接可点
+        from .links import has_url, linkify
+
+        if has_url(text):
+            self.bubble.setTextFormat(Qt.RichText)
+            self.bubble.setText(linkify(text))
+        else:
+            self.bubble.setTextFormat(Qt.PlainText)
+            self.bubble.setText(text)
         # 让气泡按内容宽度伸展，但只增不减，避免流式时来回抖
         metrics = self.bubble.fontMetrics()
         longest = max(
