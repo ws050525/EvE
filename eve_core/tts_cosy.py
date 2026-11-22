@@ -60,7 +60,8 @@ DEFAULT_REF_TEXT = "希望你以后能够做的比我还好呦。"
 DEFAULT_REF_WAV = VENDOR / "asset" / "zero_shot_prompt.wav"
 
 # 少这几个文件就说明没下全，别硬加载
-REQUIRED = ("llm.pt", "flow.pt", "hift.pt", "campplus.onnx", "cosyvoice2.yaml")
+REQUIRED_V2 = ("llm.pt", "flow.pt", "hift.pt", "campplus.onnx", "cosyvoice2.yaml")
+REQUIRED_V1 = ("llm.pt", "flow.pt", "hift.pt", "campplus.onnx", "cosyvoice.yaml")
 
 
 class CosyVoiceTts:
@@ -94,11 +95,17 @@ class CosyVoiceTts:
     # ---------- 可用性 ----------
 
     @property
+    def _is_v2(self) -> bool:
+        """看配置文件名判断版本：cosyvoice2.yaml 是 2.0，cosyvoice.yaml 是 1.0。"""
+        return (self.model_dir / "cosyvoice2.yaml").exists()
+
+    @property
     def available(self) -> bool:
         if not self.model_dir.is_dir():
             self.error = f"CosyVoice 模型目录不存在：{self.model_dir}"
             return False
-        missing = [name for name in REQUIRED if not (self.model_dir / name).exists()]
+        required = REQUIRED_V2 if self._is_v2 else REQUIRED_V1
+        missing = [name for name in required if not (self.model_dir / name).exists()]
         if missing:
             self.error = f"{self.model_dir.name} 里缺文件：{'、'.join(missing)}（可能没下完）"
             return False
@@ -110,7 +117,7 @@ class CosyVoiceTts:
             )
             return False
         try:
-            from cosyvoice.cli.cosyvoice import CosyVoice2  # noqa: F401
+            from cosyvoice.cli.cosyvoice import CosyVoice, CosyVoice2  # noqa: F401
             import torch  # noqa: F401
         except Exception as exc:
             self.error = f"缺少依赖：{exc}"
@@ -123,9 +130,10 @@ class CosyVoiceTts:
         if self._model is not None:
             return self._model
         _ensure_vendor_path()
-        from cosyvoice.cli.cosyvoice import CosyVoice2
+        from cosyvoice.cli.cosyvoice import CosyVoice, CosyVoice2
 
-        self._model = CosyVoice2(
+        cls = CosyVoice2 if self._is_v2 else CosyVoice
+        self._model = cls(
             str(self.model_dir),
             load_jit=False,
             load_trt=False,
@@ -133,10 +141,11 @@ class CosyVoiceTts:
         )
         # llm.pt 里是 bf16 权重，而前端喂进来的 embedding 是 fp32，
         # 直接跑会报 "mat1 and mat2 must have the same dtype"。统一成 fp32。
-        try:
-            self._model.model.llm.float()
-        except Exception:
-            pass
+        if self._is_v2:
+            try:
+                self._model.model.llm.float()
+            except Exception:
+                pass
         self._sample_rate = int(getattr(self._model, "sample_rate", 24000) or 24000)
         return self._model
 

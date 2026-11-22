@@ -75,7 +75,9 @@ silero_vad_model = "models/voice/silero_vad.onnx"
 # 默认仍用 vits：CosyVoice2 在这台机器上实测偏慢（RTF 1.0–1.4，语速约 1.3 字/秒），
 # 想听效果就改成 "cosyvoice"，或者先跑 tools/tts_preview.py --backend cosyvoice
 tts_backend = "vits"
-cosy_model = "models/CosyVoice2-0.5B"
+# 300M（v1）语速正常、自带「中文女/中文男」等预置音色；
+# 0.5B（v2）音质更好但实测念得极慢（1.3 字/秒），先留着备用。
+cosy_model = "models/CosyVoice-300M-SFT"
 cosy_voice = "中文女"        # 预置音色；想复刻自己的声音，以后再加参考音频
 # 下面这些只在 backend = "vits" 时生效
 tts_model = "models/voice/vits-melo-tts-zh_en"
