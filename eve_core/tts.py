@@ -460,6 +460,9 @@ class TtsSettings:
     speed: float = 1.0
     speaker: int = 0
     enabled: bool = True
+    # True = 边生成边播（首声快，但一句话会被切成很多短段，段间有缝）
+    # False = 等整段文本生成完再播（默认，连贯）
+    live: bool = False
     volume: float = 1.0
     # VITS 的三个表现力参数：
     # noise_scale 越大语气起伏越明显（太高会沙哑），noise_scale_w 越大停顿长短越随机

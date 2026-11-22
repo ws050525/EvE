@@ -425,6 +425,7 @@ class ChatWindow(QWidget):
                 speed=voice.tts_speed,
                 speaker=voice.tts_speaker,
                 enabled=self._tts_enabled,
+                live=bool(getattr(voice, "tts_live", False)),
                 volume=voice.tts_volume,
                 noise_scale=voice.tts_noise_scale,
                 noise_scale_w=voice.tts_noise_scale_w,

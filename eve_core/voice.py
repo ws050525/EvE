@@ -178,6 +178,8 @@ class VoiceSettings:
     tts_speed: float = 1.0
     tts_speaker: int = 0
     tts_enabled: bool = True
+    # 播报时机：False = 等整段文本生成完再念（默认）；True = 边生成边念
+    tts_live: bool = False
     tts_volume: float = 1.0
     tts_noise_scale: float = 0.667  # 语气起伏，越大越"有感情"，太高会沙哑
     tts_noise_scale_w: float = 0.8  # 停顿长短的随机性

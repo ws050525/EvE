@@ -34,6 +34,7 @@ class TtsWorker(QObject):
     def __init__(self, settings: TtsSettings):
         super().__init__()
         self._settings = settings
+        self._live = bool(getattr(settings, "live", False))
         self._backend = None
         self._session = None
         self._session_mark = 0  # 只让「当前这次」播报的结束信号生效
@@ -184,7 +185,10 @@ class TtsWorker(QObject):
     @Slot()
     def stream_begin(self) -> None:
         self._sent_text = ""
-        self._new_session()
+        # live=False（默认）：先把整段文本收完，stream_end 时一次性合成播放。
+        # 边生成边播会把一句话拆成很多短段，段与段之间必然有缝，听感一顿一顿的。
+        if self._live:
+            self._new_session()
 
     @Slot(str)
     def stream_text(self, delta: str) -> None:
