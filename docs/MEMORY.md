@@ -327,6 +327,25 @@ v2 念得慢是模型特性，不是配置问题，所以又下了 `iic/CosyVoic
 CosyVoice（torch + onnxruntime），偶发 **0xC0000005 访问违例**直接崩。
 改成 VITS 在真正用到时才 import，之后稳定。
 
+
+### 26.9 播报失败：后端接口不齐（v0.17.3）
+
+用户上了 GUI 一测："播放失败"。原因很直接：
+
+`eve_ui/tts.py` 的 `TtsWorker._new_session()` 先找 `backend.new_session()`，
+没有就退回 `backend.speak()`。而 `CosyVoiceTts` 当时**只实现了 `synthesize()`**，
+两个都没有 → `AttributeError: 'CosyVoiceTts' object has no attribute 'speak'`
+→ 界面上就是一句"播报失败"。
+
+补上 `new_session()`（返回 `PlaybackSession`，和 `PiperTts` 用同一套播放管线）
+和 `speak()` 之后就正常了。实测 `speak('你好，我是伊芙，测试一下播报。')` 返回 True。
+
+**教训**：给同一个接口加新实现时，要么继承同一个基类，要么加一条
+"接口必须齐"的测试。这次加了 `tts_backends_share_the_same_surface`：
+断言 PiperTts 和 CosyVoiceTts 都有 `available / synthesize / speak / new_session`。
+
+另外语速按用户反馈改回 **1.0**（0.9 听着偏慢）。
+
 ## 6. 关键决策（别推翻）
 
 1. **手动切档，不做自动路由。** 档位 = prompt + 工具集 + 默认模型。

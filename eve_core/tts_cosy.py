@@ -151,6 +151,25 @@ class CosyVoiceTts:
         self._sample_rate = int(getattr(self._model, "sample_rate", 24000) or 24000)
         return self._model
 
+    # ---------- 和 PiperTts 一致的播放接口 ----------
+    # eve_ui 的 TtsWorker 会先用 new_session()，拿不到就退回 speak()。
+    # 只实现 synthesize() 的话，两者都没有 → 会报 "no attribute 'speak'"（踩过）。
+
+    def new_session(self, on_start=None, on_done=None, on_error=None):
+        from eve_core.tts import PlaybackSession
+
+        session = PlaybackSession(self, on_start=on_start, on_done=on_done, on_error=on_error)
+        session.start()
+        return session
+
+    def speak(self, text: str, on_start=None, on_error=None) -> bool:
+        session = self.new_session(on_start=on_start, on_error=on_error)
+        session.push(text)
+        session.close()
+        session.start()
+        session.join()
+        return session.played
+
     def _use_zeroshot(self) -> bool:
         """有内置音色就 sft；没有（CosyVoice2 就是没有）就零样本复刻。"""
         if self.mode == "zero_shot":

@@ -792,6 +792,27 @@ def tts_settings_carry_backend():
     assert TtsSettings().backend == "vits", "默认还应该是 vits"
 
 
+
+@case
+def tts_backends_share_the_same_surface():
+    """所有合成后端必须实现同一套接口。
+
+    踩过的坑：CosyVoiceTts 只实现了 synthesize()，而 eve_ui 的 TtsWorker 会先找
+    new_session()、找不到再退 speak()——两个都没有，播报直接报
+    "no attribute 'speak'"，界面上就是"点了没反应 / 播报失败"。
+    """
+    from eve_core.tts import PiperTts, SapiTts
+    from eve_core.tts_cosy import CosyVoiceTts
+
+    required = ("available", "synthesize", "speak", "new_session")
+    for cls in (PiperTts, CosyVoiceTts):
+        for name in required:
+            assert hasattr(cls, name), f"{cls.__name__} 缺 {name}"
+    # SAPI 是兜底后端，只要 available + speak
+    for name in ("available", "speak"):
+        assert hasattr(SapiTts, name), f"SapiTts 缺 {name}"
+
+
 def main() -> int:
     failed = 0
     for fn in CHECKS:
