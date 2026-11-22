@@ -174,7 +174,9 @@ class CosyVoiceTts:
         """
         import numpy as np
 
-        spoken = (text or "").strip()
+        from eve_core.tts import clean_for_speech
+
+        spoken = clean_for_speech(text)
         if not spoken:
             return
         model = self._ensure()
@@ -247,7 +249,9 @@ class CosyVoiceTts:
         """返回 (float32 波形, 采样率)；失败返回 (None, 0)。"""
         import numpy as np
 
-        spoken = (text or "").strip()
+        from eve_core.tts import clean_for_speech
+
+        spoken = clean_for_speech(text)
         if not spoken:
             return None, 0
         try:

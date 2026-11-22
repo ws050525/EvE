@@ -370,6 +370,33 @@ CosyVoice 的零样本模式把参考文本当成"前文"，目标文本太短�
 就边生成边喂音频块（CosyVoice 支持 `stream=True`），首块延迟从 7.4s 降到 6.5s，
 句间空隙也小了些。**没有根治**——根治要么换更快模型，要么上更好的 GPU。
 
+
+### 26.13 颜文字被念出来（v0.18.1）
+
+用户贴的日志里有一行：`INFO synthesis text 在。说吧，要干啥(・ω・)。`
+
+问题不在模型，在**没清洗文本**。`PiperTts.synthesize()` 里一直有
+`clean_for_speech(text)`（去 markdown、颜文字、圆括号），我写 `CosyVoiceTts` 时
+直接用 `text.strip()`，于是"(・ω・)"被当成正文念，听感就是"括号 点 欧米伽 点 括号"。
+
+修法：`synthesize()` 和 `stream_synthesize()` 都先过 `clean_for_speech()`。
+实测 `'在。说吧，要干啥(・ω・)。'` → 清洗成 `'在。说吧，要干啥'`，
+合成 2.6 秒音频，ASR 回读不再有奇怪符号。
+
+**教训**：新后端不能只对齐"核心方法名"，还要对齐**预处理**。
+后端接口里应该有个共用的 `preprocess(text)`，而不是各写各的。
+
+### 26.14 日志里那些"看着像错"的行
+
+- `no frontend is avaliable`：CosyVoice 自己的文本正则前端（ttsfrd）没装，
+  数字/日期不会规整成读法。我们的 `clean_for_speech` 管 markdown 和符号，
+  但"2026-11-22"这种还是会被逐字念。要彻底解决得装 ttsfrd（Windows 上麻烦）。
+- `Failed to create CUDAExecutionProvider ... cuDNN 9 / CUDA 13`：
+  onnxruntime-gpu 和本机 CUDA 版本不匹配，**自动退回 CPU**。
+  只影响 speech tokenizer 那一步的速度，不影响正确性。
+- 第一条 `yield speech len 1.76 rtf 1.41`、第二条 `rtf 0.33`：
+  第一条含 prompt 处理，后面就快了。
+
 ## 6. 关键决策（别推翻）
 
 1. **手动切档，不做自动路由。** 档位 = prompt + 工具集 + 默认模型。
