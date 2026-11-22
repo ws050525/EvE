@@ -162,6 +162,38 @@ class CosyVoiceTts:
         session.start()
         return session
 
+    def stream_synthesize(self, text: str):
+        """边生成边吐音频块。CosyVoice 一句要好几秒，等整句会一顿一顿的。
+
+        用 stream=True：模型每生成一小段就 yield 一次，播放侧边收边播，
+        首声从"整句合成完"（3–10 秒）压到"第一块"（~1–2 秒）。
+        """
+        import numpy as np
+
+        spoken = (text or "").strip()
+        if not spoken:
+            return
+        model = self._ensure()
+        if self.mode == "cross_lingual":
+            chunks = model.inference_cross_lingual(
+                spoken, str(self.ref_wav), stream=True, speed=self.speed
+            )
+        elif self._use_zeroshot():
+            chunks = model.inference_zero_shot(
+                spoken, self.ref_text, str(self.ref_wav), stream=True, speed=self.speed
+            )
+        else:
+            chunks = model.inference_sft(
+                spoken, self.speaker, stream=True, speed=self.speed
+            )
+        for chunk in chunks:
+            speech = chunk.get("tts_speech")
+            if speech is None:
+                continue
+            piece = speech.reshape(-1).cpu().numpy().astype(np.float32)
+            if piece.size:
+                yield piece, self._sample_rate
+
     def speak(self, text: str, on_start=None, on_error=None) -> bool:
         session = self.new_session(on_start=on_start, on_error=on_error)
         session.push(text)

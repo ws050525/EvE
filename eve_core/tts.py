@@ -312,6 +312,16 @@ class PlaybackSession:
                             return
                         continue
                     sentence = self._pending.pop(0)
+                # 引擎支持流式就给小块（CosyVoice 一句要好几秒，等整句会明显卡顿）；
+                # 不支持就退回整句合成。
+                streamer = getattr(self.engine, "stream_synthesize", None)
+                if callable(streamer):
+                    for chunk, rate in streamer(sentence):
+                        if self._cancelled:
+                            return
+                        if chunk is not None and len(chunk) > 0:
+                            self._audio.put((chunk, rate))
+                    continue
                 samples, rate = self.engine.synthesize(sentence)
                 if samples is not None and len(samples) > 0:
                     self._audio.put((samples, rate))

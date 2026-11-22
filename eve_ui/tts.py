@@ -157,9 +157,10 @@ class TtsWorker(QObject):
         if callable(ensure):
             try:
                 ensure()
-                backend.synthesize("预热")  # 第一次合成还会建一些内部缓冲
             except Exception:
                 pass
+        # 不再合成一句假文本来"预热"：CosyVoice 的参考文本很长，
+        # 喂两个字的假文本会触发它去念参考音频（实测过）。
 
     @Slot(str)
     def speak(self, text: str) -> None:
