@@ -86,7 +86,7 @@ class CosyVoiceTts:
         self._ref_explicit = bool(ref_wav)
         self.ref_wav = Path(ref_wav) if ref_wav else DEFAULT_REF_WAV
         self.ref_text = (ref_text or DEFAULT_REF_TEXT).strip()
-        self.mode = (mode or "auto").lower()  # auto / sft / zero_shot
+        self.mode = (mode or "auto").lower()  # auto / sft / zero_shot / cross_lingual
         self.fp16 = bool(fp16)
         self.volume = max(0.0, min(1.5, float(volume)))
         self.fx = fx
@@ -155,6 +155,8 @@ class CosyVoiceTts:
         """有内置音色就 sft；没有（CosyVoice2 就是没有）就零样本复刻。"""
         if self.mode == "zero_shot":
             return True
+        if self.mode == "cross_lingual":
+            return False  # 它走自己的分支
         if self.mode == "sft":
             return False
         # auto：显式给了参考音频就复刻，否则看模型有没有这个预置音色
@@ -176,7 +178,12 @@ class CosyVoiceTts:
             if self._use_zeroshot() and not self.ref_wav.exists():
                 raise RuntimeError(f"零样本复刻需要参考音频，但找不到：{self.ref_wav}")
             pieces = []
-            if self._use_zeroshot():
+            if self.mode == "cross_lingual":
+                # 参考音频是别的语言（日文）时用它：只吃音频，不需要转写文本
+                chunks = model.inference_cross_lingual(
+                    spoken, str(self.ref_wav), stream=False, speed=self.speed
+                )
+            elif self._use_zeroshot():
                 chunks = model.inference_zero_shot(
                     spoken, self.ref_text, str(self.ref_wav), stream=False, speed=self.speed
                 )

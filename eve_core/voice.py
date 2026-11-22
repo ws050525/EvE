@@ -530,7 +530,12 @@ class SherpaRecognizer:
     高一截，还自带标点和数字规整，认出来的文字直接能看。
     """
 
-    def __init__(self, model_dir: str | Path, fallbacks: tuple[str, ...] | list[str] = ()):
+    def __init__(
+        self,
+        model_dir: str | Path,
+        fallbacks: tuple[str, ...] | list[str] = (),
+        language: str = "zh",
+    ):
         self.requested = Path(model_dir)
         candidates = [self.requested, *(Path(item) for item in fallbacks)]
         self.model_dir = next((path for path in candidates if path.is_dir()), self.requested)
@@ -539,6 +544,8 @@ class SherpaRecognizer:
             self.note = f"用回退模型 {self.model_dir.name}（{self.requested.name} 还没下载）"
         self._recognizer = None
         self.error = ""
+        # SenseVoice 是多语种的：zh / en / ja / ko / yue / auto
+        self.language = language or "zh"
 
     @property
     def family(self) -> str:
@@ -581,7 +588,7 @@ class SherpaRecognizer:
                     tokens=tokens,
                     num_threads=2,
                     use_itn=True,
-                    language="zh",
+                    language=self.language,
                 )
             except TypeError:
                 self._recognizer = sherpa_onnx.OfflineRecognizer.from_sense_voice(
