@@ -29,7 +29,7 @@ work_root = "."              # 文件工具和 shell_exec 的根目录，越界�
 # local = 本地 GGUF 视觉模型（离线后备，需要 [vision] 下面这些字段）
 [vision]
 backend = "cloud"
-model = "ui-tars-1.5-7b"     # 只有 backend = "local" 时才用；没下载完会自动退回别的
+model = ""                   # 留空 = 不用本地视觉。要走本地就把下面 qwen3vl-4b 的权重下回来再填 id
 # 坐标格式：auto = 按模型名猜；general = JSON 像素；uitars = 动作 + 0–1000 归一化
 # UI-TARS / Holo 这类 GUI 专用模型留 auto 就行（名字能认出来）
 format = "auto"
@@ -112,31 +112,10 @@ extra_args = ["--image-max-tokens", "1024"]  # 视觉输入上限。给太小(GU
 # 放不下就把量化降到 Q3_K_M（≈3.9 GB）；想要更准就 Q5_K_M（≈5.7 GB，8G 显存要调小 ctx）。
 # 旧的 4B 留着当后备：没下载 8B 时会自动用它。
 
-# 视觉首选：UI-TARS-1.5-7B（字节的 GUI agent 模型，专门练"看截图 → 点哪"）。
-# 权重 4.4GB + 视觉投影 1.3GB，来源：hf-mirror.com/adriabama06/UI-TARS-1.5-7B-GGUF
-# 它输出 Action: click(start_box=...) + 0–1000 归一化坐标，vision.py 已适配。
-[models."ui-tars-1.5-7b"]
-label = "UI-TARS 1.5 7B Q4_K_M（GUI 定位）"
-kind = "local_gguf"
-engine = "llamacpp"
-path = "models/UI-TARS-1.5-7B-GGUF/UI-TARS-1.5-7B-q4_k_m.gguf"
-mmproj = "models/UI-TARS-1.5-7B-GGUF/UI-TARS-1.5-7B-f16.mmproj"
-weights_mb = 4556           # 完整性检查：没到这个大小就当还没下好，自动退回上一个模型
-mmproj_mb = 1291
-ctx = 8192
-ngl = 99
 
-[models.qwen3vl-8b]
-label = "Qwen3-VL 8B Q4_K_M（视觉）"
-kind = "local_gguf"
-engine = "llamacpp"
-path = "models/Qwen3-VL-8B-Instruct-GGUF/Qwen3VL-8B-Instruct-Q4_K_M.gguf"
-mmproj = "models/Qwen3-VL-8B-Instruct-GGUF/mmproj-Qwen3VL-8B-Instruct-F16.gguf"
-ctx = 8192
-ngl = 99
-
+# 本地视觉后备（权重已于 2026-11-22 清理，要用先重新下载）
 [models.qwen3vl-4b]
-label = "Qwen3-VL 4B Q4_K_M（旧视觉，后备）"
+label = "Qwen3-VL 4B Q4_K_M（本地视觉后备，未下载）"
 kind = "local_gguf"
 engine = "llamacpp"
 path = "models/Qwen3-VL-4B-Instruct-GGUF/Qwen/Qwen3-VL-4B-Instruct-GGUF/Qwen3VL-4B-Instruct-Q4_K_M.gguf"
@@ -144,15 +123,6 @@ mmproj = "models/Qwen3-VL-4B-Instruct-GGUF/Qwen/Qwen3-VL-4B-Instruct-GGUF/mmproj
 ctx = 8192
 ngl = 99
 
-# 同一份权重、更小的上下文：用于验证热切换，也适合显存紧张时
-[models.qwen3vl-4b-small]
-label = "Qwen3-VL 4B（4k 上下文）"
-kind = "local_gguf"
-engine = "llamacpp"
-path = "models/Qwen3-VL-4B-Instruct-GGUF/Qwen/Qwen3-VL-4B-Instruct-GGUF/Qwen3VL-4B-Instruct-Q4_K_M.gguf"
-mmproj = "models/Qwen3-VL-4B-Instruct-GGUF/Qwen/Qwen3-VL-4B-Instruct-GGUF/mmproj-Qwen3VL-4B-Instruct-F16.gguf"
-ctx = 4096
-ngl = 99
 
 # ---------- 云端模型 ----------
 # 密钥统一存在 KeyStore 的 deepseek 名下（/key deepseek），两个模型共用
