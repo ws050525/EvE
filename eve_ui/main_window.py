@@ -416,7 +416,7 @@ class ChatWindow(QWidget):
         self._tts = TtsBridge(
             TtsSettings(
                 backend=getattr(voice, "tts_backend", "vits"),
-                cosy_model=getattr(voice, "cosy_model", "models/CosyVoice2-0.5B"),
+                cosy_model=getattr(voice, "cosy_model", "models/CosyVoice-300M-SFT"),
                 cosy_voice=getattr(voice, "cosy_voice", "中文女"),
                 cosy_mode=getattr(voice, "cosy_mode", "auto"),
                 cosy_ref_wav=getattr(voice, "cosy_ref_wav", ""),

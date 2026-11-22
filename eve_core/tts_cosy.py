@@ -15,6 +15,7 @@ CosyVoice2 是 0.5B 的自回归 TTS，念长句自然得多，后面还能用 3
 
 from __future__ import annotations
 
+import hashlib
 import sys
 from pathlib import Path
 
@@ -93,6 +94,8 @@ class CosyVoiceTts:
         self.error = ""
         self._model = None
         self._sample_rate = 24000
+        # 预计算出来的音色 id（见 _prepare_speaker）
+        self._spk_id = ""
 
     # ---------- 可用性 ----------
 
@@ -148,6 +151,7 @@ class CosyVoiceTts:
                 self._model.model.llm.float()
             except Exception:
                 pass
+        self._prepare_speaker()
         self._sample_rate = int(getattr(self._model, "sample_rate", 24000) or 24000)
         return self._model
 
@@ -178,6 +182,10 @@ class CosyVoiceTts:
             chunks = model.inference_cross_lingual(
                 spoken, str(self.ref_wav), stream=True, speed=self.speed
             )
+        elif self._use_zeroshot() and self._spk_id:
+            chunks = model.inference_zero_shot(
+                spoken, "", "", stream=True, speed=self.speed, zero_shot_spk_id=self._spk_id
+            )
         elif self._use_zeroshot():
             chunks = model.inference_zero_shot(
                 spoken, self.ref_text, str(self.ref_wav), stream=True, speed=self.speed
@@ -201,6 +209,25 @@ class CosyVoiceTts:
         session.start()
         session.join()
         return session.played
+
+    def _prepare_speaker(self) -> None:
+        """把参考音频的说话人特征**预计算一次**，之后每句复用。
+
+        不缓存的话每次合成都得重新算 prompt 的 embedding + speech token，
+        实测一句 24 字：8.05s → 3.61s（RTF 1.58 → 0.75），和 VITS 一个水平。
+        """
+        if not self._use_zeroshot() or not self.ref_wav.exists():
+            return
+        try:
+            stamp = f"{self.ref_wav.resolve()}|{self.ref_wav.stat().st_mtime}"
+            spk_id = "eve-" + hashlib.md5(stamp.encode("utf-8")).hexdigest()[:10]
+            cached = getattr(self._model.frontend, "spk2info", {}) or {}
+            if spk_id not in cached:
+                self._model.add_zero_shot_spk(self.ref_text, str(self.ref_wav), spk_id)
+            self._spk_id = spk_id
+        except Exception:
+            # 老版本没有 add_zero_shot_spk：退回每次重算，只是慢一点
+            self._spk_id = ""
 
     def _use_zeroshot(self) -> bool:
         """有内置音色就 sft；没有（CosyVoice2 就是没有）就零样本复刻。"""
@@ -233,6 +260,10 @@ class CosyVoiceTts:
                 # 参考音频是别的语言（日文）时用它：只吃音频，不需要转写文本
                 chunks = model.inference_cross_lingual(
                     spoken, str(self.ref_wav), stream=False, speed=self.speed
+                )
+            elif self._use_zeroshot() and self._spk_id:
+                chunks = model.inference_zero_shot(
+                    spoken, "", "", stream=False, speed=self.speed, zero_shot_spk_id=self._spk_id
                 )
             elif self._use_zeroshot():
                 chunks = model.inference_zero_shot(

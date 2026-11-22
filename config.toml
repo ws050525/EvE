@@ -82,6 +82,7 @@ cosy_voice = "中文女"        # 预置音色：中文女/中文男/英文女/�
 #   1. 准备一段 5–10 秒的干净人声（没有音乐、没有噪声）
 #   2. 把它说的那句话原文写进 cosy_ref_text
 #   3. cosy_mode 改成 "zero_shot"，把路径填进 cosy_ref_wav
+#   建议 5–8 秒：太长反而慢（每句都要重新算 prompt 特征），也更容易被"续写"
 cosy_mode = "zero_shot"
 cosy_ref_wav = "models/voices/ref-cn-5s.wav"
 cosy_ref_text = "第一次接触新游戏的时候，提升等级，成功强化装备的时。"

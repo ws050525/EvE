@@ -1,7 +1,7 @@
 """把一段录音整理成 CosyVoice 复刻用的参考音频。
 
     & 'D:\\python\\python.exe' tools\\prepare_ref.py 原音频.wav
-    & 'D:\\python\\python.exe' tools\\prepare_ref.py 原音频.mp3 --out models/voices/longanqin.wav
+    & 'D:\\python\\python.exe' tools\\prepare_ref.py 原音频.mp3 --out models/voices/my-voice.wav
 
 做三件事：转单声道、砍掉首尾静音、峰值归一。
 复刻质量几乎全看这段样本——背景有音乐、有回声、或者只截了三秒，学出来就会"糊"。
