@@ -69,8 +69,13 @@ vad_min_speech_ms = 240      # 连续说多久才算真的在说话，挡掉咳�
 vad_engine = "energy"
 silero_vad_model = "models/voice/silero_vad.onnx"
 
-# 播报：离线 VITS 中文女声。界面上「点模型名 → 选择音色」可以换，换完会记到 .data/voice.json。
-# melo 是最自然的一个（44.1kHz 播报女声）；备选 theresa / eula / keqing。
+# 播报。backend 二选一：
+#   vits      = sherpa-onnx VITS（快、省资源，语气平；下面 tts_model 那套）
+#   cosyvoice = CosyVoice2-0.5B（自然得多，占 2–3GB 显存，首次加载十几秒）
+tts_backend = "cosyvoice"
+cosy_model = "models/CosyVoice2-0.5B"
+cosy_voice = "中文女"        # 预置音色；想复刻自己的声音，以后再加参考音频
+# 下面这些只在 backend = "vits" 时生效
 tts_model = "models/voice/vits-melo-tts-zh_en"
 tts_enabled = true
 tts_speed = 1.05             # 0.5–2.0；1.0 是模型原始语速。太快会显得急、发硬

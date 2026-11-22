@@ -357,6 +357,9 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
     else:
         asr_fallbacks = tuple(str(resolve(item)) for item in fallbacks_raw)
     voice = VoiceSettings(
+        tts_backend=str(voice_raw.get("tts_backend", VoiceSettings.tts_backend)),
+        cosy_model=str(resolve(voice_raw.get("cosy_model", VoiceSettings.cosy_model))),
+        cosy_voice=str(voice_raw.get("cosy_voice", VoiceSettings.cosy_voice)),
         asr_model=str(resolve(voice_raw.get("asr_model", VoiceSettings.asr_model))),
         asr_fallbacks=asr_fallbacks,
         kws_model=str(resolve(voice_raw.get("kws_model", VoiceSettings.kws_model))),

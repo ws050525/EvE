@@ -11,3 +11,6 @@ logs/
 config.local.toml
 .vscode/
 .data/
+
+# 第三方推理代码（CosyVoice 官方仓库），按需 clone
+.vendor/

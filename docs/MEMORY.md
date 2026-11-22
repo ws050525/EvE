@@ -205,6 +205,42 @@ README 里那段"下载 Qwen3-VL-8B"的长说明也换成了三行可选步骤�
 **没删的**：`models/voice/`（924MB，TTS/ASR 在用）、`docs/assets/`（README 配图）、
 `logs/`（0.8MB，排查问题用）、`.data/`（偏好和记忆，是你自己的数据）。
 
+
+## 26. 音色换成 CosyVoice2（v0.16.0）
+
+### 26.1 为什么换
+
+原来的 sherpa-onnx VITS（melo/theresa/eula/keqing）"能用"，但语气平、断句机械。
+CosyVoice2-0.5B 是自回归 TTS，长句自然得多，而且后面能零样本复刻音色。
+
+### 26.2 两个坑（都踩了）
+
+1. **PyPI 的 `cosyvoice` 包不是推理库**。`pip install cosyvoice` 装完只有
+   `api / server / version` 三个模块，`cosyvoice.cli` 根本不存在。
+   真正的代码在官方仓库 `FunAudioLLM/CosyVoice`，clone 到 `.vendor/CosyVoice`，
+   import 前加 `sys.path`。
+2. **多线程下载器写坏文件**。第一版是"每个线程读文件末尾位置再 append"，
+   四个线程会读到同一个位置、写重复数据。改成：预分配文件 + 每个线程领块号、
+   按偏移量 `seek` 写 + `.parts.json` 记进度 + 下完校验 sha256。
+
+### 26.3 实现
+
+- `eve_core/tts_cosy.py`：`CosyVoiceTts`，接口和 `PiperTts` 一致
+  （`available` / `synthesize`），所以播放、流式、打断这些上层逻辑一行没改。
+- `eve_ui/tts.py::_pick_backend`：`tts_backend = "cosyvoice"` 时先试它，
+  不可用就**自动退回 VITS**，不会哑掉。
+- `tools/tts_preview.py --backend cosyvoice --play`：不用开 GUI 就能试听。
+
+### 26.4 参数对齐（官方 API 和直觉不一样）
+
+```python
+CosyVoice2(model_dir, load_jit=False, load_trt=False, fp16=False)   # 没有 use_flow_cache
+model.inference_sft(text, "中文女", stream=False, speed=1.0)        # speed 是模型自带的
+```
+
+一开始我按记忆写了 `use_flow_cache=False`，还打算自己重采样做变速——都是错的，
+读一眼源码才发现 `inference_sft` 本来就收 `speed`。
+
 ## 6. 关键决策（别推翻）
 
 1. **手动切档，不做自动路由。** 档位 = prompt + 工具集 + 默认模型。

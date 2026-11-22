@@ -28,6 +28,7 @@ sys.path.insert(0, str(ROOT))
 
 from eve_core.config import load_config
 from eve_core.tts import PiperTts, VoiceFx, list_voice_models
+from eve_core.tts_cosy import CosyVoiceTts
 
 TEXT = (
     "我刚看了一眼，桌面上那三个文件已经按日期整理好了。"
@@ -89,6 +90,15 @@ def render(label: str, name: str, out: Path, tts_factory, play: bool, text: str)
     return m
 
 
+def play_file(path: Path) -> None:
+    import sounddevice as sd
+    import soundfile as sf
+
+    data, rate = sf.read(str(path), dtype="float32")
+    sd.play(data, rate)
+    sd.wait()
+
+
 def main(argv: list[str] | None = None) -> int:
     cfg = load_config()
     voice = cfg.voice
@@ -96,11 +106,41 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="tts_preview", description="播报参数试听")
     parser.add_argument("--out", default=str(ROOT / ".tmp" / "preview"), help="输出目录")
     parser.add_argument("--play", action="store_true", help="渲染完逐个播放")
+    parser.add_argument(
+        "--backend",
+        default="",
+        help="vits / cosyvoice；默认跟随 config.toml 的 [voice] tts_backend",
+    )
     parser.add_argument("--text", default=TEXT, help="要念的文本")
     args = parser.parse_args(argv)
 
     text = args.text
     out = Path(args.out)
+    backend = (args.backend or getattr(voice, "tts_backend", "vits")).lower()
+
+    # CosyVoice 不走参数扫（它没有 noise_scale 那套），单独渲染一条听着就行
+    if backend == "cosyvoice":
+        engine = CosyVoiceTts(
+            voice.cosy_model,
+            speed=voice.tts_speed,
+            speaker=voice.cosy_voice,
+            volume=voice.tts_volume,
+            fx=VoiceFx(enabled=voice.tts_fx),
+        )
+        if not engine.available:
+            print("CosyVoice 不可用：", engine.error)
+            return 1
+        print(f"用 CosyVoice 合成（{engine.model_dir.name} / {engine.speaker}）…")
+        samples, rate = engine.synthesize(text)
+        if samples is None:
+            print("合成失败：", engine.error)
+            return 1
+        path = out / "cosy-current.wav"
+        save(samples, rate, path)
+        print(f"  写出 {path}（{rate} Hz，{len(samples) / rate:.1f} 秒）")
+        if args.play:
+            play_file(path)
+        return 0
 
     current = VoiceFx(
         enabled=voice.tts_fx,

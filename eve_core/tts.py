@@ -427,6 +427,10 @@ class PlaybackSession:
 
 @dataclass
 class TtsSettings:
+    # vits = sherpa-onnx 的 VITS（快、省资源）；cosyvoice = CosyVoice2（更自然，吃显存）
+    backend: str = "vits"
+    cosy_model: str = "models/CosyVoice2-0.5B"
+    cosy_voice: str = "中文女"
     model: str = "models/voice/vits-zh-hf-eula"
     speed: float = 1.0
     speaker: int = 0

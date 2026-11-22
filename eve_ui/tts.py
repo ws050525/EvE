@@ -15,6 +15,7 @@ from __future__ import annotations
 from PySide6.QtCore import QObject, QThread, Signal, Slot
 
 from eve_core.tts import PiperTts, SapiTts, TtsSettings, VoiceFx
+from eve_core.tts_cosy import CosyVoiceTts
 
 
 class TtsWorker(QObject):
@@ -60,6 +61,27 @@ class TtsWorker(QObject):
         if self._backend is not None:
             return self._backend
 
+        # 配了 CosyVoice 就先试它；模型没下全 / 依赖缺失会自己说清楚，然后退回 VITS
+        if str(getattr(self._settings, "backend", "vits")).lower() == "cosyvoice":
+            cosy = CosyVoiceTts(
+                self._settings.cosy_model,
+                speed=self._settings.speed,
+                speaker=self._settings.cosy_voice,
+                volume=self._settings.volume,
+                fx=VoiceFx(
+                    enabled=self._settings.fx,
+                    warmth=self._settings.warmth,
+                    clarity=self._settings.clarity,
+                    deharsh=self._settings.deharsh,
+                    space=self._settings.space,
+                    compression=self._settings.compression,
+                ),
+            )
+            if cosy.available:
+                self._backend = cosy
+                return self._backend
+            self._cosy_error = cosy.error
+
         piper = self._build(self._settings.model)
         if piper.available:
             self._backend = piper
@@ -71,7 +93,9 @@ class TtsWorker(QObject):
             self._backend = sapi
             return self._backend
 
-        raise RuntimeError(piper.error or "没有可用的语音合成后端")
+        raise RuntimeError(
+            getattr(self, "_cosy_error", "") or piper.error or "没有可用的语音合成后端"
+        )
 
     # ---------- 会话 ----------
 

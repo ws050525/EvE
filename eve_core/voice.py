@@ -166,6 +166,10 @@ class VoiceSettings:
     vad_engine: str = "energy"
     silero_vad_model: str = "models/voice/silero_vad.onnx"
     # 播报
+    # backend: vits（sherpa-onnx，快省资源）/ cosyvoice（CosyVoice2，更自然，吃显存）
+    tts_backend: str = "vits"
+    cosy_model: str = "models/CosyVoice2-0.5B"
+    cosy_voice: str = "中文女"
     tts_model: str = "models/voice/vits-zh-hf-eula"
     tts_speed: float = 1.0
     tts_speaker: int = 0

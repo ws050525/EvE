@@ -744,6 +744,54 @@ def voice_fx_keeps_the_crest_factor():
     assert after > before * 0.5, (before, after)
 
 
+
+@case
+def cosyvoice_backend_reports_missing_model_clearly():
+    """模型没下全时要能说清楚缺什么，而不是等加载崩。"""
+    import tempfile
+
+    from eve_core.tts_cosy import CosyVoiceTts
+
+    with tempfile.TemporaryDirectory() as tmp:
+        empty = CosyVoiceTts(tmp)
+        assert empty.available is False
+        assert "缺文件" in empty.error or "不存在" in empty.error, empty.error
+
+        # 只放一个文件，应该点名缺哪些
+        (Path(tmp) / "llm.pt").write_bytes(b"x")
+        partial = CosyVoiceTts(tmp)
+        assert partial.available is False
+        assert "flow.pt" in partial.error, partial.error
+
+        missing_dir = CosyVoiceTts(Path(tmp) / "不存在")
+        assert missing_dir.available is False
+        assert "不存在" in missing_dir.error, missing_dir.error
+
+
+@case
+def cosyvoice_settings_follow_config():
+    """配置里的 tts_backend / cosy_model / cosy_voice 要能读进来。"""
+    import tempfile
+
+    from eve_core.config import load_config
+
+    cfg = load_config()
+    voice = cfg.voice
+    assert voice.tts_backend in {"vits", "cosyvoice"}, voice.tts_backend
+    if voice.tts_backend == "cosyvoice":
+        assert voice.cosy_model and voice.cosy_voice, voice
+
+
+@case
+def tts_settings_carry_backend():
+    from eve_core.tts import TtsSettings
+
+    settings = TtsSettings(backend="cosyvoice", cosy_model="m", cosy_voice="中文女")
+    assert settings.backend == "cosyvoice"
+    assert settings.cosy_voice == "中文女"
+    assert TtsSettings().backend == "vits", "默认还应该是 vits"
+
+
 def main() -> int:
     failed = 0
     for fn in CHECKS:
