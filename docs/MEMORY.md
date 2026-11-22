@@ -501,6 +501,45 @@ CosyVoice 没装 ttsfrd，`123` 这种阿拉伯数字进模型后会被当成英
 按 4 位分块、块间补零的逻辑写错了。重写后正确。
 测试在 `tests/test_numbers.py`（7 项）。
 
+
+### 26.19 ttsfrd 在 Windows 上装不了（v0.19.2）
+
+用户让装 ttsfrd。结论：**这条路在 Windows 上走不通**。
+
+- PyPI 上的 `ttsfrd` 0.1.0 是个**空壳**：解开只有 `__init__.py`，没有 `TtsFrontendEngine`；
+- 官方在 ModelScope 只提供 `ttsfrd-0.4.2-cp38/cp310-**linux_x86_64**.whl`，
+  没有 Windows 轮子；
+- 资源包 `resource.zip` 还有 323MB。
+
+所以放弃 ttsfrd，继续用自己的规则（`eve_core/numbers.py` + `clean_for_speech`）。
+已经覆盖：数字、年份、日期、时间、小数、百分比、金额、序数、区间、文件名、网址。
+
+### 26.20 网址播报（v0.19.2）
+
+以前网址会念成"h t t p s 冒号 斜杠 斜杠 w w w 点 百度 点 com"。
+
+现在 `clean_for_speech()` 里加了：
+
+1. **协议黑名单**：`https/http/ftp/ftps/ws/wss/sftp/ssh/smb/file/mailto/tel/magnet/irc/data/rtsp/rtmp/git/svn`
+   后面的 `://` 整段不念；
+2. **www → 三w**：`w{3,}` 一律替换。中文里没人念"达不溜达不溜达不溜"，
+   说"三w"最自然；`w` 或 `ww` 保持原样（"没有哪个英文单词是三个 w 连着的"）；
+3. **域名数字逐位**：`163.com` → 一六三.com，不当成"一百六十三"；
+4. **路径/查询串不念**：`/search?q=天气` 对听者是噪音，直接丢。
+
+例：`打开 https://www.baidu.com 就行` → `打开 三w.baidu.com 就行`。
+
+### 26.21 唤醒监听：没有麦克风时别把线程弄死（v0.19.2）
+
+用户截图：`唤醒监听出错：PortAudioError ... 'There is no driver installed on your system.' [MME error 6]`
+
+原来 `WakeWorker.run()` 的 try/except 包在 while 外面，一次异常线程就退出了，
+而且提示是原样抛出的英文错误。
+
+改：把 try 挪到 while 里面，识别"没有录音设备"这一类（`PortAudioError` / `PaErrorCode` /
+`MME error` / `no driver installed` / `Invalid number of channels`），
+提示一次中文说明后 **每 3 秒重试**，插上设备自动恢复；其它异常仍然直接报。'
+
 ## 6. 关键决策（别推翻）
 
 1. **手动切档，不做自动路由。** 档位 = prompt + 工具集 + 默认模型。

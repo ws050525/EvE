@@ -37,6 +37,33 @@ _DECOR = re.compile(r"[～~【】「」『』《》※•·^|<>]")
 MAX_SPEECH_CHARS = 3000
 
 
+# 协议黑名单：播报时一律不念，https:// 念出来是"h t t p s 冒号斜杠斜杠"
+_PROTOCOLS = (
+    "https", "http", "ftps", "ftp", "wss", "ws", "sftp", "ssh", "smb", "file",
+    "mailto", "tel", "magnet", "irc", "data", "rtsp", "rtmp", "git", "svn",
+)
+_PROTO = re.compile(r"(?i)\b(?:" + "|".join(_PROTOCOLS) + r")://")
+# 带点的东西才当网址：域名/主机名。路径和查询串对听者没意义，直接不念
+_URL_TOKEN = re.compile(
+    r"(?i)\b(?:[a-z0-9](?:[a-z0-9-]*[a-z0-9])?\.)+(?:com|cn|net|org|io|ai|dev|app|me|co|top|xyz|info|tv|cc|edu|gov|mil|int|biz|site|online|tech|store|cloud|link|so|hk|tw|jp|us|uk)(?:/[^\s，。！？；、）】]*)?"
+)
+
+
+def _speak_domain(match: "re.Match") -> str:
+    """把域名整理成能念的样子。
+
+    - `www` → **三w**（三个 w 连在一起就是"三w"，中文里没人念"达不溜达不溜达不溜"）
+    - 域名里的数字逐位念：`163.com` → 一六三点com
+    - 路径和查询串不念（`/search?q=天气` 念出来全是噪音）
+    """
+    text = match.group(0)
+    text = text.split("/", 1)[0]
+    text = re.sub(r"(?i)w{3,}", "三w", text)
+    from .numbers import digits_to_zh
+
+    return re.sub(r"\d+", lambda m: digits_to_zh(m.group(0)), text)
+
+
 _FILENAME = re.compile(
     r"[A-Za-z0-9_\-]+\.(?:xlsx|docx|pptx|txt|py|json|md|png|jpe?g|pdf|csv|mp3|mp4|wav|zip|exe|html?)\b",
     re.I,
@@ -69,6 +96,9 @@ def clean_for_speech(text: str) -> str:
     text = text.strip("，。 ")
     # 文件名不念（"report_2026.xlsx" 会念成一串英文加数字），换成"文件"
     text = _FILENAME.sub("文件", text)
+    # 网址：先去协议头（黑名单），再把 www 说成 三w、域名数字逐位念
+    text = _PROTO.sub("", text)
+    text = _URL_TOKEN.sub(_speak_domain, text)
     # 阿拉伯数字转中文读法：CosyVoice 的文本前端没装，123 会被念成英文
     text = normalize_numbers(text)
 

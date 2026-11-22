@@ -80,6 +80,19 @@ def markdown_and_kaomoji_still_cleaned():
     assert "```" not in clean_for_speech("看这个：\n```python\nprint(1)\n```\n就这样")
 
 
+
+@case
+def urls_lose_protocol_and_say_three_w():
+    """播报网址：不念协议头，www 说成"三w"，路径查询串不念。"""
+    spoken = clean_for_speech("打开 https://www.baidu.com 就行")
+    assert "https" not in spoken, spoken
+    assert "三w.baidu.com" in spoken, spoken
+    # 域名里的数字逐位念；点保留（说成"点"太啰嗦，模型会自然顿一下）
+    assert clean_for_speech("参考 http://163.com/a?b=1 这个") == "参考 一六三.com 这个"
+    assert "三w" not in clean_for_speech("ww.example.com 和 w3.org")
+    assert "三w" not in clean_for_speech("只有一个 w 的 ws 不算")
+
+
 def main() -> int:
     failed = 0
     for fn in CHECKS:

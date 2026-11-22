@@ -108,6 +108,19 @@ class VoiceBridge(QObject):
             self._thread.wait(1000)
 
 
+def _is_audio_device_error(exc: Exception) -> bool:
+    """是不是"没有可用录音设备"这一类问题（换设备/重试就能好）。"""
+    name = type(exc).__name__
+    text = str(exc)
+    return (
+        "PortAudioError" in name
+        or "PaErrorCode" in text
+        or "MME error" in text
+        or "no driver installed" in text.lower()
+        or "Invalid number of channels" in text
+    )
+
+
 class WakeWorker(QObject):
     """常听唤醒：麦克风一直开，听到「伊芙」就发出一声。
 
@@ -124,6 +137,7 @@ class WakeWorker(QObject):
         self._settings = settings
         self._enabled = threading.Event()
         self._stop = threading.Event()
+        self._warned = False   # 麦克风不可用只提示一次，别刷屏
 
     @Slot()
     def run(self) -> None:
@@ -148,19 +162,20 @@ class WakeWorker(QObject):
             return
 
         self._enabled.set()
-        try:
-            while not self._stop.is_set():
-                if not self._enabled.is_set():
-                    time.sleep(0.05)
-                    continue
+        while not self._stop.is_set():
+            if not self._enabled.is_set():
+                time.sleep(0.05)
+                continue
 
-                # 每次进听都新开一路流：暂停时关掉，免得和按键录音抢设备
+            # 每次进听都新开一路流：暂停时关掉，免得和按键录音抢设备
+            try:
                 with sd.InputStream(
                     samplerate=SAMPLE_RATE,
                     channels=1,
                     dtype="float32",
                     blocksize=self.CHUNK,
                 ) as stream:
+                    self._warned = False  # 能开流了就重置，下次坏了还会提醒
                     detector.reset()
                     while self._enabled.is_set() and not self._stop.is_set():
                         data, _ = stream.read(self.CHUNK)
@@ -170,8 +185,20 @@ class WakeWorker(QObject):
                             self._enabled.clear()
                             self.woke.emit(hit)
                             break
-        except Exception as exc:
-            self.failed.emit(f"唤醒监听出错：{type(exc).__name__}: {exc}")
+            except Exception as exc:
+                # 没有录音设备（MME error 6 / PaErrorCode -9999）不是致命错误：
+                # 插上耳机或关掉占用程序就好了，所以隔几秒重试，别把线程弄死。
+                if _is_audio_device_error(exc):
+                    if not self._warned:
+                        self.failed.emit(
+                            "麦克风不可用（系统没检测到录音设备，或设备被别的程序占用）。"
+                            "唤醒暂时关闭，插上设备后会自动恢复。"
+                        )
+                        self._warned = True
+                    time.sleep(3)
+                    continue
+                self.failed.emit(f"唤醒监听出错：{type(exc).__name__}: {exc}")
+                return
 
     def set_enabled(self, value: bool) -> None:
         if value:
