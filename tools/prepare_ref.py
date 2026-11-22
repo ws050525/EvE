@@ -62,6 +62,37 @@ def trim(wave: np.ndarray, rate: int, threshold: float = 0.02) -> np.ndarray:
     return wave[start:end]
 
 
+def cut_at_pause(wave: np.ndarray, rate: int, limit_seconds: float) -> np.ndarray:
+    """把音频截到 limit_seconds 以内，但**切在停顿处**。
+
+    直接从中间剪断会让参考音频停在半个字上，CosyVoice 会学出一个"起始咔哒声"
+    （实测过：每次合成开头都有一小段杂音）。所以先找最后一个停顿再切。
+    """
+    limit = int(limit_seconds * rate)
+    if len(wave) <= limit:
+        return wave
+    frame = max(1, int(rate * 0.02))
+    count = min(len(wave), limit) // frame
+    if count < 10:
+        return wave[:limit]
+    rms = np.array(
+        [np.sqrt(np.mean(wave[i * frame : (i + 1) * frame] ** 2)) for i in range(count)]
+    )
+    quiet = rms < 0.02
+    # 从后往前找一段 >=120ms 的静音，切在它的中间
+    run_start = None
+    for i in range(count - 1, -1, -1):
+        if quiet[i]:
+            if run_start is None:
+                run_start = i
+        else:
+            if run_start is not None and (run_start - i) * frame >= int(0.12 * rate):
+                cut = (i + (run_start - i) // 2) * frame
+                return wave[:cut]
+            run_start = None
+    return wave[:limit]
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="prepare_ref", description="整理复刻用的参考音频")
     parser.add_argument("source", help="原始音频（wav / mp3 / m4a）")
@@ -81,9 +112,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"⚠ 太短了（{seconds:.1f}s）。复刻建议 5–10 秒，太短学不出音色")
 
     wave = trim(resample(wave, rate), TARGET_RATE)
-    limit = int(args.max_seconds * TARGET_RATE)
-    if len(wave) > limit:
-        wave = wave[:limit]
+    wave = cut_at_pause(wave, TARGET_RATE, args.max_seconds)
     peak = float(np.abs(wave).max()) or 1.0
     wave = (wave / peak) * 0.95
 

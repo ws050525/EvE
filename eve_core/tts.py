@@ -199,6 +199,27 @@ class SentenceStreamer:
         return None
 
 
+def _fade_edges(samples, rate: int, ms: float = 5.0):
+    """首尾各淡入淡出 5ms。
+
+    合成出来的波形常常不是从 0 开始（也不在 0 结束），直接丢给声卡就是一记"咔"。
+    淡一下听不出来，但能彻底消掉爆音。
+    """
+    try:
+        import numpy as np
+
+        wave = np.asarray(samples, dtype="float32").reshape(-1).copy()
+        n = min(int(rate * ms / 1000), len(wave) // 2)
+        if n <= 1:
+            return wave
+        ramp = np.linspace(0.0, 1.0, n, dtype="float32")
+        wave[:n] *= ramp
+        wave[-n:] *= ramp[::-1]
+        return wave
+    except Exception:
+        return samples
+
+
 def _silence(rate: int, ms: float):
     import numpy as np
 
@@ -397,7 +418,7 @@ class PlaybackSession:
                     # 两句紧贴着放会像抢话；中间留一口气，听感松一点。
                     # 同一句的后续块不能插静音，否则就是"一顿一顿"的根源。
                     stream.write(_silence(rate, self.SENTENCE_GAP_MS))
-                stream.write(samples)
+                stream.write(_fade_edges(samples, rate))
                 played = True
         except Exception as exc:
             if not self._cancelled:  # 主动取消时 abort 抛的异常不算失败
