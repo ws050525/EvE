@@ -522,7 +522,7 @@ class TtsSettings:
     cosy_mode: str = "auto"
     cosy_ref_wav: str = ""
     cosy_ref_text: str = ""
-    model: str = "models/voice/vits-zh-hf-eula"
+    model: str = "models/voice/vits-melo-tts-zh_en"
     speed: float = 1.0
     speaker: int = 0
     enabled: bool = True
@@ -861,12 +861,6 @@ def list_voice_models(voice_dir: str | Path) -> list[dict]:
 
 _VOICE_NAMES = {
     "vits-melo-tts-zh_en": "Melo（自然播报，44.1kHz）",
-    "vits-zh-hf-eula": "优菈（清冷）",
-    "vits-zh-hf-theresa": "德丽莎（偏软）",
-    "vits-zh-hf-keqing": "刻晴（清亮）",
-    "vits-zh-hf-fanchen-C": "播音腔（端正）",
-    "vits-zh-aishell3": "多说话人（8kHz 电话音）",
-    "vits-piper-zh_CN-huayan-medium": "Huayan（piper）",
 }
 
 

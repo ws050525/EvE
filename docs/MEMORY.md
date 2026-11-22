@@ -566,6 +566,29 @@ CosyVoice 没装 ttsfrd，`123` 这种阿拉伯数字进模型后会被当成英
 测试：`tests/test_links.py` 9 项 + 用 QLabel 实测（有网址 → RichText + `<a href`，
 无网址 → PlainText 且原文不变）。
 
+## 5.9 模型列表与音色列表清理（v0.21.0）
+
+模型菜单只剩两个云端模型：
+
+| id | 说明 |
+| --- | --- |
+| `deepseek-flash` | 默认，三个档位都用它 |
+| `deepseek-pro` | 手动切换，贵但强 |
+
+删掉的：
+- `[models.qwen3vl-4b]`（本地 GGUF 视觉）—— 权重 2026-11-22 已删（省 9GB），
+  菜单里留着只会误导。`[engines.llamacpp]` 只给它用，一起删。
+  代码里的 `local_gguf` 路径**保留**（`runtime.py` 还认），以后下回来加一条配置即可。
+- VITS 音色 `vits-zh-hf-eula` / `theresa` / `keqing`（各 132MB，共 396MB）——
+  默认后端早就是 CosyVoice 了，这三个只是菜单里的噪音。只留 `vits-melo-tts-zh_en`（182MB），
+  `TtsSettings.model` 和 `VoiceSettings.tts_model` 的默认值也跟着改成 melo。
+
+`models/` 现在 2.7GB：CosyVoice-300M 2.2GB + melo 182MB + SenseVoice 229MB + KWS 36MB + paraformer 80MB + 参考音频 1MB。
+
+**顺带修的测试**：`test_agent_loop.py` 里两条用例原来假设 config.toml 有 `qwen3vl-4b`，
+删掉后挂了。改成自己构造 `ModelConfig` / 假 cfg，不再依赖真实配置——
+这样以后配置怎么变测试都稳。
+
 ## 6. 关键决策（别推翻）
 
 1. **手动切档，不做自动路由。** 档位 = prompt + 工具集 + 默认模型。

@@ -275,13 +275,23 @@ def cloud_cost_matches_config_price():
 
 @case
 def local_model_is_free():
-    """本地模型不计费。现在没有档位默认用本地了，手动指一个来验价格这条链。"""
+    """本地模型不计费。
+
+    不依赖 config.toml 里有没有本地模型（本地 GGUF 已清理）——
+    直接构造一个 0 单价的 ModelConfig，走同一套计费链路。
+    """
+    from eve_core.config import ModelConfig
+    from eve_core.pricing import ModelPrice
+
+    local = ModelConfig(id="local-x", label="本地测试", kind="local_gguf")
+    price = ModelPrice(
+        input=local.price_in, output=local.price_out, cached_input=local.price_cached_in
+    )
     agent = _agent("chat")
-    agent._model_override = "qwen3vl-4b"
-    agent._provider_model_id = "qwen3vl-4b"  # 别让它去真拉本地引擎
-    agent.send("你好")
-    assert agent.usage.totals().calls == 1
-    assert agent.usage.session_cost == 0.0, agent.usage.session_cost
+    agent.usage.record("local-x", {"prompt_tokens": 900, "completion_tokens": 900}, price)
+    totals = agent.usage.totals()
+    assert totals.calls == 1, totals
+    assert totals.cost == 0.0, totals.cost
 
 
 @case
@@ -407,16 +417,28 @@ def auto_confirm_skips_the_prompt():
 def model_rows_flag_prices_and_active():
     from eve_ui.bridge import model_rows
 
-    cfg = load_config()
-    rows = model_rows(cfg, "deepseek-flash")
+    from types import SimpleNamespace
+
+    from eve_core.config import ModelConfig
+
+    # 自己造一份列表：本地要排在云端前面、本地免费、当前那个标 active
+    cfg = SimpleNamespace(
+        models={
+            "cloud-y": ModelConfig(
+                id="cloud-y", label="云端", kind="cloud_api", price_in=2.0, price_out=8.0
+            ),
+            "local-x": ModelConfig(id="local-x", label="本地", kind="local_gguf"),
+        }
+    )
+    rows = model_rows(cfg, "cloud-y")
     ids = [row["id"] for row in rows]
-    assert ids.index("qwen3vl-4b") < ids.index("deepseek-flash"), f"本地应排前面：{ids}"
+    assert ids.index("local-x") < ids.index("cloud-y"), f"本地应排前面：{ids}"
 
-    flash = next(row for row in rows if row["id"] == "deepseek-flash")
-    assert flash["active"] and not flash["free"], flash
-    assert flash["price_in"] == 2.0 and flash["price_out"] == 8.0, flash
+    cloud = next(row for row in rows if row["id"] == "cloud-y")
+    assert cloud["active"] and not cloud["free"], cloud
+    assert cloud["price_in"] == 2.0 and cloud["price_out"] == 8.0, cloud
 
-    local = next(row for row in rows if row["id"] == "qwen3vl-4b")
+    local = next(row for row in rows if row["id"] == "local-x")
     assert local["free"] and not local["active"], local
 
 

@@ -29,7 +29,7 @@ work_root = "."              # 文件工具和 shell_exec 的根目录，越界�
 # local = 本地 GGUF 视觉模型（离线后备，需要 [vision] 下面这些字段）
 [vision]
 backend = "cloud"
-model = ""                   # 留空 = 不用本地视觉。要走本地就把下面 qwen3vl-4b 的权重下回来再填 id
+model = ""                   # 留空 = 纯云端视觉（DeepSeek Flash 是多模态的）
 # 坐标格式：auto = 按模型名猜；general = JSON 像素；uitars = 动作 + 0–1000 归一化
 # UI-TARS / Holo 这类 GUI 专用模型留 auto 就行（名字能认出来）
 format = "auto"
@@ -107,46 +107,6 @@ tts_fx_space = 0.06          # 空间感 0–0.3，大了发空
 tts_fx_compression = 0.30    # 压缩 0–1，大了压扁、发硬
 
 # ---------- 推理引擎（本地模型的运行容器）----------
-
-[engines.llamacpp]
-# 从 Aico 项目复制一份到本项目 tools/ 之后，把这里改成 "tools/llama.cpp/llama-server.exe"
-bin = "D:/1/Aico AI - 1.1/llama.cpp/llama-server.exe"
-threads = 8
-extra_args = ["--image-max-tokens", "1024"]  # 视觉输入上限。给太小(GUI 定位会瞎点)，给太大(慢)；1024 是实测的平衡点
-
-# ---------- 本地模型（现在只剩"眼睛"这一个用途）----------
-#
-# 聊天和干活都走云端了，本地只需要一个能看屏幕的视觉模型。
-# 推荐 Qwen3-VL-8B：和原来的 4B 同一族（llama.cpp 的 mtmd 用法完全一样），
-# 但 8B 认界面、读小字、点控件都明显更准。
-#
-# 下载（任选一个源，放好路径就能用，不用改代码）：
-#   https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct-GGUF
-#   要两个文件：
-#     Qwen3VL-8B-Instruct-Q4_K_M.gguf          ≈ 5.0 GB
-#     mmproj-Qwen3VL-8B-Instruct-F16.gguf      ≈ 1.7 GB
-#   国内可以用镜像：https://hf-mirror.com/Qwen/Qwen3-VL-8B-Instruct-GGUF/resolve/main/<文件名>
-#
-# 放不下就把量化降到 Q3_K_M（≈3.9 GB）；想要更准就 Q5_K_M（≈5.7 GB，8G 显存要调小 ctx）。
-# 旧的 4B 留着当后备：没下载 8B 时会自动用它。
-
-
-# 本地视觉后备（权重已于 2026-11-22 清理，要用先重新下载）
-[models.qwen3vl-4b]
-label = "Qwen3-VL 4B Q4_K_M（本地视觉后备，未下载）"
-kind = "local_gguf"
-engine = "llamacpp"
-path = "models/Qwen3-VL-4B-Instruct-GGUF/Qwen/Qwen3-VL-4B-Instruct-GGUF/Qwen3VL-4B-Instruct-Q4_K_M.gguf"
-mmproj = "models/Qwen3-VL-4B-Instruct-GGUF/Qwen/Qwen3-VL-4B-Instruct-GGUF/mmproj-Qwen3VL-4B-Instruct-F16.gguf"
-ctx = 8192
-ngl = 99
-
-
-# ---------- 云端模型 ----------
-# 密钥统一存在 KeyStore 的 deepseek 名下（/key deepseek），两个模型共用
-#
-# 单价单位：元 / 百万 tokens。这里填的是**高峰档上限**，宁可高估也不低估；
-# 命中缓存的输入按 10% 计。要改价只改这几行，代码不动。
 
 [models.deepseek-flash]
 label = "DeepSeek V4.1 Flash"

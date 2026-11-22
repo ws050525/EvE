@@ -72,14 +72,15 @@ DeepSeek Flash 是多模态的（`/v1/models` 里 `input_modalities: ["text","im
 所以流程是：**粗定位 → 点一下 → 回报截图确认**。点不中换下一个候选点，
 小图标就别点了，用键盘。
 
-### 本地视觉（可选，默认不需要）
+### 本地视觉（可选，当前未安装）
 
 默认 `backend = "cloud"`：截图直接发给主模型，快、准、不占显存。
 `models/` 里的视觉权重已经清理（2026-11-22），**平时用不到**。
 
 真要用离线视觉时：
 
-1. 下回来一份 GGUF（Qwen3-VL 4B/8B 都行，需要配套 `mmproj`）
+1. 下回来一份 GGUF（Qwen3-VL 4B/8B 都行，需要配套 `mmproj`）；
+   权重在 2026-11-22 清理时删掉了（省 9GB），要恢复得重新下载并加回下面的配置
 2. 在 `[models.*]` 里加一条（`path` + `mmproj`）
 3. `[vision]` 改成 `backend = "local"`、`model = "<那条的 id>"`
 
@@ -186,7 +187,7 @@ logs/         会话日志与引擎日志（不入版本库）
 
 # 指定档位 / 临时指定模型
 & 'D:\python\python.exe' eve_cli.py --mode desktop
-& 'D:\python\python.exe' eve_cli.py --model qwen3vl-4b-small
+& 'D:\python\python.exe' eve_cli.py --model <你起的本地模型 id>
 
 # 非交互跑一句
 & 'D:\python\python.exe' eve_cli.py --once "你好，介绍一下你自己"
@@ -294,9 +295,6 @@ ASR 会把「伊芙」听成「衣服」，所以唤醒词变体里收了它。
 | 音色 | 风格 | 采样率 |
 | --- | --- | --- |
 | `vits-melo-tts-zh_en` | Melo，自然播报腔（默认） | 44.1 kHz |
-| `vits-zh-hf-theresa` | 德丽莎，偏软 | 22.05 kHz |
-| `vits-zh-hf-eula` | 优菈，清冷 | 22.05 kHz |
-| `vits-zh-hf-keqing` | 刻晴，清亮 | 22.05 kHz |
 | `vits-zh-hf-fanchen-C` | 播音腔，端正 | 16 kHz |
 | `vits-zh-aishell3` | 174 个说话人，但只有 8 kHz，电话音 | 8 kHz |
 
