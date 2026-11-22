@@ -314,17 +314,24 @@ class PlaybackSession:
                     sentence = self._pending.pop(0)
                 # 引擎支持流式就给小块（CosyVoice 一句要好几秒，等整句会明显卡顿）；
                 # 不支持就退回整句合成。
-                streamer = getattr(self.engine, "stream_synthesize", None)
+                streamer = (
+                    getattr(self.engine, "stream_synthesize", None)
+                    if getattr(self.engine, "stream_playback", False)
+                    else None
+                )
                 if callable(streamer):
+                    head = True
                     for chunk, rate in streamer(sentence):
                         if self._cancelled:
                             return
                         if chunk is not None and len(chunk) > 0:
-                            self._audio.put((chunk, rate))
+                            # 只有这一句的第一块前面才需要换气
+                            self._audio.put((chunk, rate, head))
+                            head = False
                     continue
                 samples, rate = self.engine.synthesize(sentence)
                 if samples is not None and len(samples) > 0:
-                    self._audio.put((samples, rate))
+                    self._audio.put((samples, rate, True))
         except Exception as exc:  # 合成挂了也要让播放线程收尾
             self._fail(f"合成失败：{type(exc).__name__}: {exc}")
         finally:
@@ -374,7 +381,11 @@ class PlaybackSession:
                         continue
                 if item is None:
                     break
-                samples, sample_rate = item
+                if len(item) == 3:
+                    samples, sample_rate, sentence_head = item
+                else:  # 兼容老的二元组
+                    samples, sample_rate = item
+                    sentence_head = True
                 if stream is None or sample_rate != rate:
                     if stream is not None:
                         self._close_stream(stream, rate)
@@ -382,8 +393,9 @@ class PlaybackSession:
                     stream = self._open_stream(sd, rate)
                     if not played and self._on_start is not None:
                         self._on_start()
-                elif played:
-                    # 两句紧贴着放会像抢话；中间留一口气，听感松一点
+                elif played and sentence_head:
+                    # 两句紧贴着放会像抢话；中间留一口气，听感松一点。
+                    # 同一句的后续块不能插静音，否则就是"一顿一顿"的根源。
                     stream.write(_silence(rate, self.SENTENCE_GAP_MS))
                 stream.write(samples)
                 played = True

@@ -66,7 +66,11 @@ REQUIRED_V1 = ("llm.pt", "flow.pt", "hift.pt", "campplus.onnx", "cosyvoice.yaml"
 
 
 class CosyVoiceTts:
-    """CosyVoice2 的薄封装，接口对齐 PiperTts。"""
+    """CosyVoice 的薄封装，接口对齐 PiperTts。"""
+
+    # 默认整句合成再播：音色特征缓存后 RTF 0.76，比播放快，整句不会有缝。
+    # 改成 True 会边生成边播（首声快 1 秒左右，但每 1.5 秒左右一句缝）。
+    stream_playback = False
 
     def __init__(
         self,
