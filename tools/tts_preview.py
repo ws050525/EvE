@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from eve_core.config import load_config
-from eve_core.tts import PiperTts, VoiceFx, list_voice_models
+from eve_core.tts import VoiceFx, list_voice_models
 from eve_core.tts_cosy import CosyVoiceTts
 
 TEXT = (
@@ -157,6 +157,8 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     def make(model=None, speed=None, fx=None):
+        from eve_core.tts import PiperTts
+
         return PiperTts(
             model or voice.tts_model,
             speed=voice.tts_speed if speed is None else speed,
