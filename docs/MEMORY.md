@@ -589,6 +589,42 @@ CosyVoice 没装 ttsfrd，`123` 这种阿拉伯数字进模型后会被当成英
 删掉后挂了。改成自己构造 `ModelConfig` / 假 cfg，不再依赖真实配置——
 这样以后配置怎么变测试都稳。
 
+
+### 26.23 换回 VITS + 数字按语种念（v0.22.0）
+
+用户听完复刻音色的结论：**吐字不清、有点滑舌**，英文句子里数字也不对。
+他给了三条判断，基本都对：
+
+1. CosyVoice 的文本前端（ttsfrd）只有 Linux 轮子，Windows 上没有 → 缺前端，吐字和数字都吃亏；
+2. 模型只有 300M，太小（文件 2.2GB）→ 零样本复刻的保真度上不去；
+3. 参考音频只有 10 秒 → 音色信息太少。
+
+**决定：默认换回 `vits` + melo**（`tts_model = models/voice/vits-melo-tts-zh_en`，
+语速 1.05）。CosyVoice 保留为可选后端（`tts_backend = "cosyvoice"` 随时切回），
+模型目录 `models/CosyVoice-300M-SFT`（2.2GB）暂时留着，要删随时说。
+
+**顺手修的真 bug**：数字规范化不分语种。
+
+以前 `normalize_numbers()` 一律转中文，于是全英文回复里 `123` 变成"一百二十三"，
+中文 TTS 念成怪音、英文 TTS 根本读不出中文——两头不讨好。
+
+现在按**语境**分流（看数字前后 10 个字符、且不跨标点）：
+
+| 语境 | 输入 | 输出 |
+| --- | --- | --- |
+| 中文 | `123` | 一百二十三 |
+| 英文 | `There are 123 files` | There are one hundred and twenty-three files |
+| 英文 | `2026-11-22` | November twenty-second, twenty twenty-six |
+| 英文 | `$128` / `50%` | one hundred and twenty-eight dollars / fifty percent |
+| 中文 | `把 3 个文件…` | 把 三个文件… |
+
+中英混排时各按自己那侧算：`Open 2 files，然后把 3 个删掉` →
+`Open two files，然后把 三个删掉`（靠"只看最近标点之间"实现，
+不然左边的英文会把右边的汉字数字带偏）。
+
+测试：`tests/test_numbers.py` 从 9 项加到 **14 项**，新增英文数字/日期/金额/序数/
+混排用例。全套 277 项全绿。
+
 ## 6. 关键决策（别推翻）
 
 1. **手动切档，不做自动路由。** 档位 = prompt + 工具集 + 默认模型。

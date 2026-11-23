@@ -114,6 +114,55 @@ def speech_cleaning_never_touches_display_text():
     assert not offenders, f"这些地方不该调用播报清洗：{offenders}"
 
 
+
+@case
+def english_context_uses_english_words():
+    """全英文的句子里，数字要念英文，不能变成"一百二十三"。"""
+    out = clean_for_speech("There are 123 files in the folder.")
+    assert "one hundred" in out and "twenty-three" in out, out
+    assert "一百" not in out, out
+
+
+@case
+def english_dates_times_money():
+    out = clean_for_speech("The meeting is at 15:30 on 2026-11-22.")
+    assert "November twenty-second" in out, out
+    assert "twenty twenty-six" in out, out
+
+    money = clean_for_speech("It costs $128.")
+    assert "one hundred and twenty-eight dollars" in money, money
+
+    pct = clean_for_speech("We are at 50% done.")
+    assert "fifty percent" in pct, pct
+
+
+@case
+def chinese_context_still_uses_chinese():
+    """中文句子里的数字不能被英文规则抢走。"""
+    out = clean_for_speech("把 3 个文件放到 D 盘")
+    assert "三 个文件" in out, out
+    assert "three" not in out, out
+
+
+@case
+def mixed_sentence_keeps_each_side_own_language():
+    out = clean_for_speech("Open 2 files，然后把 3 个删掉")
+    assert "two" in out, out
+    assert "三" in out, out
+
+
+@case
+def english_ordinals():
+    from eve_core.numbers import _ordinal_en
+
+    assert _ordinal_en(1) == "first"
+    assert _ordinal_en(3) == "third"
+    assert _ordinal_en(12) == "twelfth"
+    assert _ordinal_en(21) == "twenty-first"
+    assert _ordinal_en(22) == "twenty-second"
+    assert _ordinal_en(100) == "one hundredth"
+
+
 def main() -> int:
     failed = 0
     for fn in CHECKS:
