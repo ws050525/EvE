@@ -92,8 +92,14 @@ cosy_ref_text = "第一次接触新游戏的时候，提升等级，成功强化
 # GPT-SoVITS：吐字最清楚的一套（推荐用来复刻指定音色）
 # 配好这两项、把 tts_backend 改成 "gptsovits" 即可；
 # 参考音频 5–10 秒，必须是**完整句子**（从半个字上截断会让模型学出杂音）。
-gpt_ref_wav = "models/voices/ref-cn-clean.wav"
-gpt_ref_text = "第一次接触新游戏的时候，提升等级，成功强化装备的时候。"
+# 参考音频二选一（都是游戏原声，5–10 秒、切在完整句子上）：
+#   中文版：models/voices/ref-cn-game.wav  （来自 video/CN/好感度3.ogg）
+#   日文版：models/voices/ref-jp-game.wav  （来自 video/JP/好感度2.ogg）
+gpt_ref_wav = "models/voices/ref-cn-game.wav"
+gpt_ref_text = "自从认识了老师，爱丽丝的内部就自动编写了一段程序。"
+# 日文版换成：
+# gpt_ref_wav = "models/voices/ref-jp-game.wav"
+# gpt_ref_text = "新しいゲームに初めて向き合うとき、レベルを上げて装備強化に成功した時。"
 gpt_half = true              # 半精度：省显存、更快，4060 够用
 # 下面这些只在 backend = "vits" 时生效
 tts_model = "models/voice/vits-melo-tts-zh_en"

@@ -49,7 +49,8 @@ class GptSovitsTts:
         repo: str | Path = "",
     ):
         self.repo = Path(repo) if repo else VENDOR
-        self.ref_wav = Path(ref_wav) if ref_wav else Path()
+        # 构造时就转成绝对路径：合成期间 cwd 会切到仓库根，相对路径会解析错
+        self.ref_wav = Path(ref_wav).resolve() if ref_wav else Path()
         self.ref_text = str(ref_text or "").strip()
         self.text_lang = text_lang or "zh"
         self.prompt_lang = prompt_lang or self.text_lang
@@ -127,6 +128,7 @@ class GptSovitsTts:
         return {
             "text": text,
             "text_lang": self.text_lang,
+            # 必须绝对路径：合成期间我们把 cwd 切到了仓库根，相对路径会找不到
             "ref_audio_path": str(self.ref_wav),
             "prompt_text": self.ref_text,
             "prompt_lang": self.prompt_lang,

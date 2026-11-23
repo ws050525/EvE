@@ -14,3 +14,7 @@ config.local.toml
 
 # 第三方推理代码（CosyVoice 官方仓库），按需 clone
 .vendor/
+
+# 训练/复刻用的原始素材与数据集
+video/
+models/dataset*/
