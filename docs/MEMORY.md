@@ -657,6 +657,46 @@ GPT-SoVITS / CosyVoice 微调吃的就是 3–10 秒的小片段 + 每段文字�
 - 总时长 5–10 分钟起（零样本够用），1 小时以上才值得微调；
 - 文字稿要准（自动转写只能当草稿）。
 
+
+### 26.25 部署 GPT-SoVITS（v0.24.0）
+
+用户决定换 GPT-SoVITS（吐字比 CosyVoice 零样本清楚），要求先部署，数据他自己整理。
+
+**装在哪**：`.vendor/GPT-SoVITS`（gitignore），权重在 `GPT_SoVITS/pretrained_models`，
+走 v2 预训练（`gsv-v2final-pretrained` + chinese-hubert + chinese-roberta）。
+
+**踩了六个坑，都记下来避免重复**：
+
+1. **pip 把 torch 换了**。装依赖时 pip 解析出 torch 2.15.0+cpu，覆盖了 2.5.1+cu121，
+   torchaudio/torchvision 直接不兼容。教训：**装第三方项目的依赖前先看 pip 的 dry-run**，
+   或者用 `--no-deps` 逐个装。恢复方法：从阿里云镜像下 cu121 的 wheel 手动 `--no-deps` 装。
+2. **下游下载慢**：download.pytorch.org 卡死在 211MB，aliyun 镜像单线程 1.3MB/s，
+   10 线程也才 1.5MB/s（对端限速）。2.3GB 花了 26 分钟。工具：`.tmp/dl_http.py`。
+3. **transformers 拒绝 .bin**：4.5x 在 torch<2.6 上禁止 `torch.load` 的 `pytorch_model.bin`
+   （安全限制）。解法：自己转成 `model.safetensors`（BART/HuBERT 各一次，
+   注意共享张量要 `clone()`，否则 safetensors 拒收）。
+4. **`sv.py` 用相对路径**：`os.getcwd() + GPT_SoVITS/eres2net` 和
+   `GPT_SoVITS/pretrained_models/sv/...`。解法：加载和合成期间临时 `os.chdir(repo)`，
+   结束再切回来。
+5. **`fast_langdetect` 缓存目录**：`pretrained_models/fast_langdetect` 不存在就报错，
+   手动建目录后它会自己下 125MB 的 lid 模型。
+6. **G2PW 中文多音字模型**：默认不存在，调用
+   `text.g2pw.onnx_api.download_and_decompress()` 从魔搭拉（608MB，含模型和词典）。
+
+**实测（warm）**：
+- 8 字：合成 3.57s / 音频 2.1s → RTF 1.70（短句有固定开销）
+- 27 字：合成 3.15s / 音频 4.9s → **RTF 0.64**（比实时快）
+- ASR 回读 27 字长句**一字不差**（CosyVoice 同期是"吐字糊"的评价）
+
+**集成**：`eve_core/tts_gptsovits.py`（`available/synthesize/stream_synthesize/speak/new_session`），
+`tts_backend = "gptsovits"` 切换，失败自动退回 VITS。
+试听：`tools/tts_preview.py --backend gptsovits`。
+
+**默认仍是 vits**，等用户听完 gpt 样本、给了更多数据再决定。
+
+磁盘：`.vendor/GPT-SoVITS` 3.4GB（含 G2PW 608MB、roberta 1.2GB），`models` 529MB。
+CosyVoice 模型 2.2GB 已删。
+
 ## 6. 关键决策（别推翻）
 
 1. **手动切档，不做自动路由。** 档位 = prompt + 工具集 + 默认模型。

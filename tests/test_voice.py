@@ -803,9 +803,10 @@ def tts_backends_share_the_same_surface():
     """
     from eve_core.tts import PiperTts, SapiTts
     from eve_core.tts_cosy import CosyVoiceTts
+    from eve_core.tts_gptsovits import GptSovitsTts
 
     required = ("available", "synthesize", "speak", "new_session")
-    for cls in (PiperTts, CosyVoiceTts):
+    for cls in (PiperTts, CosyVoiceTts, GptSovitsTts):
         for name in required:
             assert hasattr(cls, name), f"{cls.__name__} 缺 {name}"
     # SAPI 是兜底后端，只要 available + speak

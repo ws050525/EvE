@@ -362,6 +362,11 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
         cosy_model=str(resolve(voice_raw.get("cosy_model", VoiceSettings.cosy_model))),
         cosy_voice=str(voice_raw.get("cosy_voice", VoiceSettings.cosy_voice)),
         cosy_mode=str(voice_raw.get("cosy_mode", VoiceSettings.cosy_mode)),
+        gpt_ref_wav=(
+            str(resolve(voice_raw["gpt_ref_wav"])) if voice_raw.get("gpt_ref_wav") else ""
+        ),
+        gpt_ref_text=str(voice_raw.get("gpt_ref_text", VoiceSettings.gpt_ref_text)),
+        gpt_half=bool(voice_raw.get("gpt_half", VoiceSettings.gpt_half)),
         cosy_ref_wav=(
             str(resolve(voice_raw["cosy_ref_wav"])) if voice_raw.get("cosy_ref_wav") else ""
         ),

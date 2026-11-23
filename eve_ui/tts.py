@@ -16,6 +16,7 @@ from PySide6.QtCore import QObject, QThread, Signal, Slot
 
 from eve_core.tts import PiperTts, SapiTts, TtsSettings, VoiceFx
 from eve_core.tts_cosy import CosyVoiceTts
+from eve_core.tts_gptsovits import GptSovitsTts
 
 
 class TtsWorker(QObject):
@@ -62,8 +63,32 @@ class TtsWorker(QObject):
         if self._backend is not None:
             return self._backend
 
+        backend_name = str(getattr(self._settings, "backend", "vits")).lower()
+
+        # GPT-SoVITS：吐字最清楚，参考音频同样只要几秒
+        if backend_name == "gptsovits":
+            gpt = GptSovitsTts(
+                ref_wav=getattr(self._settings, "gpt_ref_wav", ""),
+                ref_text=getattr(self._settings, "gpt_ref_text", ""),
+                speed=self._settings.speed,
+                volume=self._settings.volume,
+                half=bool(getattr(self._settings, "gpt_half", True)),
+                fx=VoiceFx(
+                    enabled=self._settings.fx,
+                    warmth=self._settings.warmth,
+                    clarity=self._settings.clarity,
+                    deharsh=self._settings.deharsh,
+                    space=self._settings.space,
+                    compression=self._settings.compression,
+                ),
+            )
+            if gpt.available:
+                self._backend = gpt
+                return self._backend
+            self._gpt_error = gpt.error
+
         # 配了 CosyVoice 就先试它；模型没下全 / 依赖缺失会自己说清楚，然后退回 VITS
-        if str(getattr(self._settings, "backend", "vits")).lower() == "cosyvoice":
+        if backend_name == "cosyvoice":
             cosy = CosyVoiceTts(
                 self._settings.cosy_model,
                 speed=self._settings.speed,
@@ -98,7 +123,10 @@ class TtsWorker(QObject):
             return self._backend
 
         raise RuntimeError(
-            getattr(self, "_cosy_error", "") or piper.error or "没有可用的语音合成后端"
+            getattr(self, "_gpt_error", "")
+            or getattr(self, "_cosy_error", "")
+            or piper.error
+            or "没有可用的语音合成后端"
         )
 
     # ---------- 会话 ----------

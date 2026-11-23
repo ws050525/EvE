@@ -29,6 +29,7 @@ sys.path.insert(0, str(ROOT))
 from eve_core.config import load_config
 from eve_core.tts import VoiceFx, list_voice_models
 from eve_core.tts_cosy import CosyVoiceTts
+from eve_core.tts_gptsovits import GptSovitsTts
 
 TEXT = (
     "我刚看了一眼，桌面上那三个文件已经按日期整理好了。"
@@ -119,6 +120,31 @@ def main(argv: list[str] | None = None) -> int:
     text = args.text
     out = Path(args.out)
     backend = (args.backend or getattr(voice, "tts_backend", "vits")).lower()
+
+    # GPT-SoVITS 同样不走参数扫：它靠参考音频定音色
+    if backend == "gptsovits":
+        engine = GptSovitsTts(
+            ref_wav=args.ref_wav or getattr(voice, "gpt_ref_wav", ""),
+            ref_text=args.ref_text or getattr(voice, "gpt_ref_text", ""),
+            speed=voice.tts_speed,
+            volume=voice.tts_volume,
+            half=bool(getattr(voice, "gpt_half", True)),
+            fx=VoiceFx(enabled=voice.tts_fx),
+        )
+        if not engine.available:
+            print("GPT-SoVITS 不可用：", engine.error)
+            return 1
+        print(f"用 GPT-SoVITS 合成（参考：{Path(engine.ref_wav).name}）…")
+        samples, rate = engine.synthesize(text)
+        if samples is None:
+            print("合成失败：", engine.error)
+            return 1
+        path = out / "gpt-current.wav"
+        save(samples, rate, path)
+        print(f"  写出 {path}（{rate} Hz，{len(samples) / rate:.1f} 秒）")
+        if args.play:
+            play_file(path)
+        return 0
 
     # CosyVoice 不走参数扫（它没有 noise_scale 那套），单独渲染一条听着就行
     if backend == "cosyvoice":

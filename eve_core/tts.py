@@ -519,6 +519,9 @@ class TtsSettings:
     backend: str = "vits"
     cosy_model: str = "models/CosyVoice-300M-SFT"
     cosy_voice: str = "中文女"
+    gpt_ref_wav: str = ""
+    gpt_ref_text: str = ""
+    gpt_half: bool = True
     cosy_mode: str = "auto"
     cosy_ref_wav: str = ""
     cosy_ref_text: str = ""
