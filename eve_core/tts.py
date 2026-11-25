@@ -522,6 +522,8 @@ class TtsSettings:
     gpt_ref_wav: str = ""
     gpt_ref_text: str = ""
     gpt_half: bool = True
+    gpt_vits_path: str = ""
+    gpt_t2s_path: str = ""
     cosy_mode: str = "auto"
     cosy_ref_wav: str = ""
     cosy_ref_text: str = ""

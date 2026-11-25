@@ -167,6 +167,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--max", dest="max_s", type=float, default=10.0, help="每段最长秒数")
     parser.add_argument("--sr", type=int, default=32000, help="输出采样率（GPT-SoVITS 用 32000）")
     parser.add_argument("--no-asr", action="store_true", help="不自动转写（自己写稿）")
+    parser.add_argument(
+        "--text-dir",
+        default="",
+        help="已有的逐条文字稿目录：音频名.txt。给了就用它，不再自动转写",
+    )
     args = parser.parse_args(argv)
 
     source = Path(args.source)
@@ -187,8 +192,13 @@ def main(argv: list[str] | None = None) -> int:
 
     log(f"找到 {len(files)} 个音频文件，输出到 {out_dir}")
 
+    text_dir = Path(args.text_dir) if args.text_dir else None
+    if text_dir is not None and not text_dir.is_dir():
+        log(f"文字稿目录不存在：{text_dir}")
+        return 1
+
     recognizer = None
-    if not args.no_asr:
+    if text_dir is None and not args.no_asr:
         from eve_core.config import load_config
         from eve_core.voice import SherpaRecognizer
 
@@ -210,7 +220,16 @@ def main(argv: list[str] | None = None) -> int:
             skipped += 1
             continue
         wave_data = trim_silence(resample(wave_data, rate, args.sr), args.sr)
-        segments = split_segments(wave_data, args.sr, args.min_s, args.max_s)
+        if text_dir is not None:
+            # 一段音频 = 一句文本，不能切；超长的直接跳过（切了文字就对不上）
+            seconds = len(wave_data) / args.sr
+            if seconds > args.max_s:
+                log(f"  跳过 {path.name}：{seconds:.1f}s 超过 {args.max_s:.0f}s")
+                skipped += 1
+                continue
+            segments = [wave_data]
+        else:
+            segments = split_segments(wave_data, args.sr, args.min_s, args.max_s)
         if not segments:
             log(f"  跳过 {path.name}：没有可用语音")
             skipped += 1
@@ -224,6 +243,19 @@ def main(argv: list[str] | None = None) -> int:
             total_audio += seconds
 
             text = ""
+            if text_dir is not None:
+                # 用用户提供的逐条稿：一段音频一行文本，切段后沿用同一份文字
+                txt = text_dir / f"{path.stem}.txt"
+                if txt.exists():
+                    text = " ".join(txt.read_text(encoding="utf-8", errors="replace").split())
+                else:
+                    log(f"  !! {path.name} 没有对应文字稿，这条跳过")
+                    target.unlink(missing_ok=True)
+                    continue
+                if not text:
+                    log(f"  !! {path.name} 文字稿是空的，跳过")
+                    target.unlink(missing_ok=True)
+                    continue
             if recognizer is not None:
                 try:
                     from math import gcd as _gcd

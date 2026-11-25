@@ -421,6 +421,8 @@ class ChatWindow(QWidget):
                 gpt_ref_wav=getattr(voice, "gpt_ref_wav", ""),
                 gpt_ref_text=getattr(voice, "gpt_ref_text", ""),
                 gpt_half=bool(getattr(voice, "gpt_half", True)),
+                gpt_vits_path=getattr(voice, "gpt_vits_path", ""),
+                gpt_t2s_path=getattr(voice, "gpt_t2s_path", ""),
                 cosy_mode=getattr(voice, "cosy_mode", "auto"),
                 cosy_ref_wav=getattr(voice, "cosy_ref_wav", ""),
                 cosy_ref_text=getattr(voice, "cosy_ref_text", ""),

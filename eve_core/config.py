@@ -367,6 +367,12 @@ def load_config(config_path: str | Path | None = None) -> AppConfig:
         ),
         gpt_ref_text=str(voice_raw.get("gpt_ref_text", VoiceSettings.gpt_ref_text)),
         gpt_half=bool(voice_raw.get("gpt_half", VoiceSettings.gpt_half)),
+        gpt_vits_path=(
+            str(resolve(voice_raw["gpt_vits_path"])) if voice_raw.get("gpt_vits_path") else ""
+        ),
+        gpt_t2s_path=(
+            str(resolve(voice_raw["gpt_t2s_path"])) if voice_raw.get("gpt_t2s_path") else ""
+        ),
         cosy_ref_wav=(
             str(resolve(voice_raw["cosy_ref_wav"])) if voice_raw.get("cosy_ref_wav") else ""
         ),

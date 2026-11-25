@@ -732,6 +732,47 @@ GPT-SoVITS 零样本实测：
 **结论**：5 分钟数据足够零样本；要微调（保真度再上一档）建议 30–60 分钟。
 转写是 ASR 自动出的，有错字（"魔力充能100%腹肌" 之类），微调前必须人工校对。
 
+
+### 26.27 第一次真正微调 GPT-SoVITS（v0.25.0）
+
+用户给了完整数据：`video/CN/CN1`（64）+ `video/CN/CN2`（87）= 151 个 ogg，
+配 `video/CN-test/CN-test1` 和 `CN-text2` 两组逐条文字稿（同名 .txt）。
+两批文件**重名不同内容**，打进数据集时要加前缀（`CN1_` / `CN2_`），否则会互相覆盖。
+
+**数据集**：140 段 / 9.8 分钟（跳过 10 个超过 12 秒的，切了文字就对不上）。
+工具加了 `--text-dir`：给了逐条稿就用它，不再 ASR；此时**不切段**（一段音频=一句文本）。
+
+**训练**（`tools/train_voice.py`，等价于 webui 里的按钮）：
+1. 预处理三步（BERT 特征 / HuBERT / 语义 token）
+2. SoVITS 10 epoch / batch 6 → **3.5 分钟**（1.18 it/s）
+3. GPT 12 epoch / batch 6 → **约 45 秒**（4.17 it/s）
+
+**踩了一串坑，全是 Windows + 这块显卡特有的**：
+
+| 现象 | 原因 | 解法 |
+| --- | --- | --- |
+| 训练 CPU 时间一直是 0，卡死 | `DataLoader(num_workers=4)` 在 Windows 上子进程起不来 | s2/s1 的 `num_workers` 全改 0 |
+| `prefetch_factor could only be specified in multiprocessing` | num_workers=0 时该参数必须 None | 两处 DataLoader 一起改 |
+| `persistent_workers needs num_workers > 0` | 同上 | 改成 `(num_workers > 0)` |
+| `No module named 'text'` | 预处理脚本按 `text.xxx` 导入，需 PYTHONPATH | 传 `GPT_SoVITS` 和仓库根 |
+| gradio 5.x import 崩（ast TypeError） | `tools/my_utils.py` 顶层 import gradio | 包 try/except 给个 stub |
+| 存权重 `FileNotFoundError` | `logs_s2_v2/`、`GPT_weights_v2/` 不会自己建 | 训练前 mkdir |
+| 推理加载训练断点报 `KeyError: 'config'` | `G_*.pth` 是训练断点（model/optimizer），不是推理权重 | 新增 `tools/export_sovits.py` 用 `savee()` 导出 |
+| 导出的 config 加载不了 | 必须同时支持 `a.b` 和 `a["b"]`，还要能 pickle | `eve_core.tts_gptsovits.AttrDict` |
+| 英文合成 `LookupError` | nltk 的 `averaged_perceptron_tagger` 下不到（GitHub 被墙 + SSRF 拦截） | cmudict 用 PyPI 的 `cmudict` 包补上；tagger 退化成"全当名词" |
+
+**30 秒试听结果**（同一角色，文本见 `.tmp/evaltext/`）：
+
+| 版本 | 输入 | 音频 | 合成耗时 |
+| --- | --- | --- | --- |
+| 中文 | 110 字 | 23.9s | 23.0s |
+| 英文 | 416 字符 | 26.3s | 22.1s |
+| 中英混合 | 160 字 | 19.4s | 16.8s |
+
+ASR 回读：中文几乎一字不差，英文完整，中英混排中英文都念对。
+
+**结论**：10 分钟的 151 句数据足够做出可用的微调模型；再往上（30–60 分钟）音色会更稳。
+
 ## 6. 关键决策（别推翻）
 
 1. **手动切档，不做自动路由。** 档位 = prompt + 工具集 + 默认模型。

@@ -26,6 +26,29 @@ VITS = "gsv-v2final-pretrained/s2G2333k.pth"
 HUBERT = "chinese-hubert-base"
 BERT = "chinese-roberta-wwm-ext-large"
 
+class AttrDict(dict):
+    """既能 a.b 也能 a["b"]。
+
+    导出微调权重时，config 要同时满足 savee（属性写法）和推理端（下标写法），
+    而且必须能被 pickle —— 所以要放在这个模块里，别写在脚本的 __main__。
+    """
+
+    def __getattr__(self, key):
+        try:
+            return self[key]
+        except KeyError as exc:
+            raise AttributeError(key) from exc
+
+    def __setattr__(self, key, value):
+        self[key] = value
+
+
+def wrap_attrdict(obj):
+    if isinstance(obj, dict):
+        return AttrDict({k: wrap_attrdict(v) for k, v in obj.items()})
+    return obj
+
+
 REQUIRED = (T2S, VITS, f"{HUBERT}/pytorch_model.bin", f"{BERT}/pytorch_model.bin")
 
 
@@ -45,6 +68,8 @@ class GptSovitsTts:
         volume: float = 1.0,
         half: bool = True,
         device: str = "cuda",
+        t2s_path: str | Path = "",
+        vits_path: str | Path = "",
         fx=None,
         repo: str | Path = "",
     ):
@@ -58,6 +83,9 @@ class GptSovitsTts:
         self.volume = max(0.0, min(1.5, float(volume)))
         self.half = bool(half)
         self.device = device
+        # 微调后的权重（留空就用 v2 预训练）
+        self.t2s_path = Path(t2s_path).resolve() if t2s_path else None
+        self.vits_path = Path(vits_path).resolve() if vits_path else None
         self.fx = fx
         self.error = ""
         self._tts = None
@@ -87,7 +115,38 @@ class GptSovitsTts:
 
     # ---------- 加载 ----------
 
+    @staticmethod
+    def _patch_nltk_tag() -> None:
+        """英文前端要 nltk 的 averaged_perceptron_tagger，本机下不到就先打个补丁。
+
+        正版 nltk 数据（cmudict / tagger）从 GitHub 拉不下来（被墙 + SSRF 拦截），
+        cmudict 已经用 PyPI 的 cmudict 包补上；tagger 补不了，
+        退化成"所有词都当名词"——只会影响 read/lead 这种多音词的读音选择，
+        音色和流利度不受影响。
+        """
+        try:
+            import nltk
+
+            nltk.pos_tag(["probe"])
+            return  # 数据齐全
+        except Exception:
+            pass
+
+        def _naive_pos_tag(tokens, tagset=None, lang="eng"):
+            return [(word, "NN") for word in tokens]
+
+        import nltk
+
+        nltk.pos_tag = _naive_pos_tag
+        for module_name in ("g2p_en", "g2p_en.g2p"):
+            try:
+                module = __import__(module_name, fromlist=["pos_tag"])
+                module.pos_tag = _naive_pos_tag
+            except Exception:
+                continue
+
     def _paths(self) -> None:
+        self._patch_nltk_tag()
         # GPT-SoVITS 的模块是按 "GPT_SoVITS/" 和仓库根目录两个视角 import 的
         for path in (self.repo / "GPT_SoVITS", self.repo, self.repo / "GPT_SoVITS" / "eres2net"):
             text = str(path)
@@ -105,8 +164,8 @@ class GptSovitsTts:
             "device": self.device,
             "is_half": self.half,
             "version": "v2",
-            "t2s_weights_path": str(pre / T2S),
-            "vits_weights_path": str(pre / VITS),
+            "t2s_weights_path": str(self.t2s_path or (pre / T2S)),
+            "vits_weights_path": str(self.vits_path or (pre / VITS)),
             "cnhuhbert_base_path": str(pre / HUBERT),
             "bert_base_path": str(pre / BERT),
         }
@@ -118,6 +177,11 @@ class GptSovitsTts:
         try:
             os.chdir(self.repo)
             self._tts = TTS(TTS_Config(configs))
+            # TTS_Config 里写的路径会被版本预设覆盖，微调权重必须显式再加载一遍
+            if self.vits_path is not None:
+                self._tts.init_vits_weights(str(self.vits_path))
+            if self.t2s_path is not None:
+                self._tts.init_t2s_weights(str(self.t2s_path))
         finally:
             os.chdir(cwd)
         return self._tts

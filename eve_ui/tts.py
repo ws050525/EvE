@@ -73,6 +73,8 @@ class TtsWorker(QObject):
                 speed=self._settings.speed,
                 volume=self._settings.volume,
                 half=bool(getattr(self._settings, "gpt_half", True)),
+                t2s_path=getattr(self._settings, "gpt_t2s_path", ""),
+                vits_path=getattr(self._settings, "gpt_vits_path", ""),
                 fx=VoiceFx(
                     enabled=self._settings.fx,
                     warmth=self._settings.warmth,

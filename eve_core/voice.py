@@ -175,6 +175,8 @@ class VoiceSettings:
     gpt_ref_wav: str = ""
     gpt_ref_text: str = ""
     gpt_half: bool = True        # 半精度，省显存、更快
+    gpt_vits_path: str = ""      # 微调后的 SoVITS 权重（留空用预训练）
+    gpt_t2s_path: str = ""       # 微调后的 GPT 权重
     cosy_mode: str = "auto"      # auto / sft（用预置音色）/ zero_shot（复刻）
     cosy_ref_wav: str = ""       # 参考音频路径
     cosy_ref_text: str = ""      # 参考音频里说的那句话
